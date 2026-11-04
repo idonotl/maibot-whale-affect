@@ -1,0 +1,68 @@
+[plugin]
+enabled = false
+shadow_mode = true
+config_version = "0.2.0"
+
+[mood]
+timezone = "Asia/Shanghai"
+daily_initial = 60
+global_recovery_half_life_hours = 4.0
+user_offset_half_life_hours = 2.0
+offset_min = -30
+offset_max = 20
+per_user_daily_positive_global_cap = 6
+per_user_daily_negative_global_cap = 6
+
+[affinity]
+initial = 15
+daily_positive_cap = 4.0
+daily_negative_cap = 8.0
+valid_chat_gain = 0.15
+valid_chat_interval_seconds = 600
+active_day_bonus = 0.5
+active_day_required_interactions = 2
+active_day_min_span_seconds = 600
+decay_when_absent = false
+title_enter_threshold = 85
+title_exit_threshold = 80
+title_required_active_days = 14
+title_required_interactions = 40
+title_requires_opt_in = true
+title_allow_in_groups = false
+title_min_reply_interval = 5
+
+[reactions]
+pout_ttl_seconds = 180
+soothed_ttl_seconds = 180
+hurt_ttl_seconds = 1800
+pout_max_replies = 2
+soothed_max_replies = 1
+
+[scoring]
+duplicate_text_window_seconds = 600
+positive_semantic_cooldown_seconds = 600
+positive_semantic_daily_count_cap = 3
+attack_cooldown_seconds = 60
+source_event_max_age_seconds = 120
+continuation_window_seconds = 120
+
+[classifier]
+llm_enabled = false
+model_name = "deepseek-flash-affect"
+min_confidence = 0.8
+timeout_seconds = 8.0
+max_concurrency = 1
+queue_capacity = 100
+global_calls_per_minute = 6
+per_user_interval_seconds = 30
+temperature = 0.0
+max_tokens = 180
+
+[privacy]
+diagnostic_text_enabled = false
+event_retention_days = 30
+
+[admin]
+platform = "qq"
+bot_account_id = ""
+user_ids = []

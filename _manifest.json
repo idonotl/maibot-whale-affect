@@ -1,0 +1,53 @@
+{
+  "manifest_version": 2,
+  "id": "local.whale-affect",
+  "version": "0.2.5",
+  "name": "小鲸鱼心情与好感度",
+  "description": "为麦麦提供每日心情、每用户长期好感与短期情绪反应的本地状态系统，并按状态注入自然语气提示。",
+  "author": {
+    "name": "idonotl",
+    "url": "https://github.com/idonotl"
+  },
+  "license": "GPL-3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/idonotl/maibot-whale-affect",
+    "homepage": "https://github.com/idonotl/maibot-whale-affect",
+    "documentation": "https://github.com/idonotl/maibot-whale-affect/blob/main/README.md",
+    "issues": "https://github.com/idonotl/maibot-whale-affect/issues"
+  },
+  "host_application": {
+    "min_version": "1.3.15",
+    "max_version": "1.3.19"
+  },
+  "sdk": {
+    "min_version": "2.16.0",
+    "max_version": "2.99.99"
+  },
+  "plugin_type": "chat",
+  "dependencies": [],
+  "display": {
+    "icon": {
+      "type": "local",
+      "value": "assets/icon.svg",
+      "fallback": "heart",
+      "background": "#123B4A"
+    }
+  },
+  "capabilities": [
+    "message.get_by_id",
+    "message.get_recent",
+    "message.get_by_time_in_chat",
+    "chat.get_all_streams",
+    "chat.get_stream_by_user_id",
+    "chat.get_stream_by_group_id",
+    "llm.generate",
+    "llm.get_available_models",
+    "config.get_plugin"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  }
+}

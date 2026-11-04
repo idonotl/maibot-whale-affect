@@ -1,0 +1,693 @@
+{
+  "schema_version": 2,
+  "required_capabilities": ["declarative_basic"],
+  "workspace_title": "小鲸鱼心情与好感度",
+  "pages": [
+    {
+      "id": "overview",
+      "title": "全局状态",
+      "description": "心情 M、当日计分聚合与运行健康度；全部数据来自插件 SQLite，不含消息原文。",
+      "placement": "workspace",
+      "icon": "chart",
+      "mode": "declarative",
+      "poll_interval_seconds": 0,
+      "queries": {
+        "global": {
+          "api": "global_state",
+          "version": "1"
+        },
+        "runtime": {
+          "api": "runtime_status",
+          "version": "1"
+        },
+        "events": {
+          "api": "recent_events",
+          "version": "1"
+        }
+      },
+      "content": [
+        {
+          "type": "grid",
+          "label": "今日概览",
+          "columns": 4,
+          "children": [
+            {
+              "type": "stat",
+              "label": "心情 M",
+              "value": {"scope": "query", "source": "global", "field": "mood"},
+              "when": {"reference": {"scope": "query", "source": "global", "field": "ok"}}
+            },
+            {
+              "type": "stat",
+              "label": "今日计分事件",
+              "value": {"scope": "query", "source": "global", "field": "aggregate.applied_events"},
+              "when": {"reference": {"scope": "query", "source": "global", "field": "ok"}}
+            },
+            {
+              "type": "stat",
+              "label": "今日活跃用户",
+              "value": {"scope": "query", "source": "global", "field": "aggregate.active_users"},
+              "when": {"reference": {"scope": "query", "source": "global", "field": "ok"}}
+            },
+            {
+              "type": "stat",
+              "label": "今日抑制事件",
+              "value": {"scope": "query", "source": "global", "field": "suppressed_today"},
+              "when": {"reference": {"scope": "query", "source": "global", "field": "ok"}}
+            }
+          ]
+        },
+        {
+          "type": "progress",
+          "label": "心情 M（0-100，日初 60）",
+          "value": {"scope": "query", "source": "global", "field": "mood"},
+          "when": {"reference": {"scope": "query", "source": "global", "field": "ok"}}
+        },
+        {
+          "type": "grid",
+          "label": "运行信息",
+          "columns": 4,
+          "children": [
+            {
+              "type": "stat",
+              "label": "本地日期",
+              "value": {"scope": "query", "source": "global", "field": "local_date"},
+              "when": {"reference": {"scope": "query", "source": "global", "field": "ok"}}
+            },
+            {
+              "type": "stat",
+              "label": "时区",
+              "value": {"scope": "query", "source": "global", "field": "timezone"},
+              "when": {"reference": {"scope": "query", "source": "global", "field": "ok"}}
+            },
+            {
+              "type": "stat",
+              "label": "影子模式",
+              "value": {"scope": "query", "source": "runtime", "field": "shadow_mode"}
+            },
+            {
+              "type": "stat",
+              "label": "Hook 异常",
+              "value": {"scope": "query", "source": "runtime", "field": "stats.hook_errors"}
+            }
+          ]
+        },
+        {
+          "type": "grid",
+          "label": "处理计数",
+          "columns": 3,
+          "children": [
+            {
+              "type": "stat",
+              "label": "已写入事件",
+              "value": {"scope": "query", "source": "runtime", "field": "stats.applied"}
+            },
+            {
+              "type": "stat",
+              "label": "已抑制",
+              "value": {"scope": "query", "source": "runtime", "field": "stats.suppressed"}
+            },
+            {
+              "type": "stat",
+              "label": "已注入提示块",
+              "value": {"scope": "query", "source": "runtime", "field": "stats.blocks_injected"}
+            }
+          ]
+        },
+        {
+          "type": "grid",
+          "label": "状态后端",
+          "columns": 3,
+          "children": [
+            {
+              "type": "stat",
+              "label": "数据库错误数",
+              "value": {"scope": "query", "source": "runtime", "field": "db_error_count"}
+            },
+            {
+              "type": "stat",
+              "label": "入站身份缓存",
+              "value": {"scope": "query", "source": "runtime", "field": "identity_cache"}
+            },
+            {
+              "type": "stat",
+              "label": "审计记录总数",
+              "value": {"scope": "query", "source": "global", "field": "aggregate.audit_total"},
+              "when": {"reference": {"scope": "query", "source": "global", "field": "ok"}}
+            }
+          ]
+        },
+        {
+          "type": "text",
+          "label": "数据库路径",
+          "value": {"scope": "query", "source": "runtime", "field": "db_path"}
+        },
+        {
+          "type": "text",
+          "label": "启动错误",
+          "value": {"scope": "query", "source": "runtime", "field": "startup_error"},
+          "when": {"reference": {"scope": "query", "source": "runtime", "field": "startup_error"}, "operator": "not_empty"}
+        },
+        {
+          "type": "table",
+          "label": "最近计分事件",
+          "value": {"scope": "query", "source": "events", "field": "items"},
+          "columns": [
+            {"field": "local_date", "label": "日期"},
+            {"field": "user_id", "label": "用户"},
+            {"field": "category", "label": "分类"},
+            {"field": "status", "label": "状态"},
+            {"field": "confidence", "label": "置信度"},
+            {"field": "reason_code", "label": "原因码"}
+          ],
+          "when": {"reference": {"scope": "query", "source": "events", "field": "ok"}}
+        }
+      ]
+    },
+    {
+      "id": "users",
+      "title": "用户列表",
+      "description": "分页浏览已建立关系的用户；点击表格行查看该行摘要，填入 QQ 号或完整身份键查看完整状态。",
+      "placement": "sidebar",
+      "icon": "list",
+      "mode": "declarative",
+      "auto_refresh": true,
+      "poll_interval_seconds": 0,
+      "queries": {
+        "users": {
+          "api": "list_users",
+          "version": "1",
+          "parameters": {
+            "page": {"type": "integer", "minimum": 1, "maximum": 1000000}
+          }
+        },
+        "detail": {
+          "api": "user_state",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string"}
+          }
+        }
+      },
+      "content": [
+        {
+          "type": "input",
+          "name": "user_id",
+          "label": "用户 QQ 号或完整身份键",
+          "value": ""
+        },
+        {
+          "type": "text",
+          "value": "点击表格行查看该行摘要；在输入框填入 QQ 号或完整身份键后会自动刷新下方完整状态。"
+        },
+        {
+          "type": "grid",
+          "label": "分页信息",
+          "columns": 3,
+          "children": [
+            {
+              "type": "stat",
+              "label": "匹配用户数",
+              "value": {"scope": "query", "source": "users", "field": "total"},
+              "when": {"reference": {"scope": "query", "source": "users", "field": "ok"}}
+            },
+            {
+              "type": "stat",
+              "label": "当前页",
+              "value": {"scope": "query", "source": "users", "field": "page"},
+              "when": {"reference": {"scope": "query", "source": "users", "field": "ok"}}
+            },
+            {
+              "type": "stat",
+              "label": "每页条数",
+              "value": {"scope": "query", "source": "users", "field": "page_size"},
+              "when": {"reference": {"scope": "query", "source": "users", "field": "ok"}}
+            }
+          ]
+        },
+        {
+          "type": "table",
+          "label": "已建立关系的用户",
+          "value": {"scope": "query", "source": "users", "field": "items"},
+          "columns": [
+            {"field": "user_id", "label": "用户"},
+            {"field": "scope", "label": "范围"},
+            {"field": "affinity", "label": "好感 F"},
+            {"field": "affinity_level", "label": "好感档位"},
+            {"field": "offset", "label": "偏移 D"},
+            {"field": "active_days", "label": "活跃日"},
+            {"field": "valid_interactions", "label": "有效交流"},
+            {"field": "reaction", "label": "互动反应"},
+            {"field": "today_valid_count", "label": "今日有效"},
+            {"field": "today_positive_f", "label": "今日正 F"},
+            {"field": "today_negative_f", "label": "今日负 F"},
+            {"field": "last_event_utc", "label": "最近事件"}
+          ],
+          "selection": "picked",
+          "detail": "user_detail",
+          "when": {"reference": {"scope": "query", "source": "users", "field": "ok"}}
+        },
+        {
+          "type": "pagination",
+          "name": "page",
+          "label": "翻页",
+          "value": {"scope": "query", "source": "users", "field": ""},
+          "when": {"reference": {"scope": "query", "source": "users", "field": "ok"}}
+        },
+        {
+          "type": "dialog",
+          "name": "user_detail",
+          "label": "所选用户摘要",
+          "children": [
+            {
+              "type": "grid",
+              "columns": 2,
+              "children": [
+                {
+                  "type": "stat",
+                  "label": "身份键",
+                  "value": {"scope": "selection", "source": "picked", "field": "user_key"}
+                },
+                {
+                  "type": "stat",
+                  "label": "偏好称呼",
+                  "value": {"scope": "selection", "source": "picked", "field": "preferred_title"}
+                },
+                {
+                  "type": "stat",
+                  "label": "好感 F",
+                  "value": {"scope": "selection", "source": "picked", "field": "affinity"}
+                },
+                {
+                  "type": "stat",
+                  "label": "偏移 D",
+                  "value": {"scope": "selection", "source": "picked", "field": "offset"}
+                },
+                {
+                  "type": "stat",
+                  "label": "活跃日",
+                  "value": {"scope": "selection", "source": "picked", "field": "active_days"}
+                },
+                {
+                  "type": "stat",
+                  "label": "有效交流",
+                  "value": {"scope": "selection", "source": "picked", "field": "valid_interactions"}
+                },
+                {
+                  "type": "stat",
+                  "label": "今日有效次数",
+                  "value": {"scope": "selection", "source": "picked", "field": "today_valid_count"}
+                },
+                {
+                  "type": "stat",
+                  "label": "今日正 F 用量",
+                  "value": {"scope": "selection", "source": "picked", "field": "today_positive_f"}
+                },
+                {
+                  "type": "stat",
+                  "label": "今日负 F 用量",
+                  "value": {"scope": "selection", "source": "picked", "field": "today_negative_f"}
+                },
+                {
+                  "type": "stat",
+                  "label": "互动反应",
+                  "value": {"scope": "selection", "source": "picked", "field": "reaction"}
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "card",
+          "label": "完整状态",
+          "children": [
+            {
+              "type": "grid",
+              "columns": 4,
+              "children": [
+                {
+                  "type": "stat",
+                  "label": "好感 F",
+                  "value": {"scope": "query", "source": "detail", "field": "affinity"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "偏移 D",
+                  "value": {"scope": "query", "source": "detail", "field": "offset"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "有效心情 E",
+                  "value": {"scope": "query", "source": "detail", "field": "effective"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "心情档位",
+                  "value": {"scope": "query", "source": "detail", "field": "mood_level"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "columns": 4,
+              "children": [
+                {
+                  "type": "stat",
+                  "label": "好感档位",
+                  "value": {"scope": "query", "source": "detail", "field": "affinity_level"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "互动反应",
+                  "value": {"scope": "query", "source": "detail", "field": "reaction"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "活跃日",
+                  "value": {"scope": "query", "source": "detail", "field": "active_days"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "有效交流",
+                  "value": {"scope": "query", "source": "detail", "field": "valid_interactions"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "columns": 4,
+              "children": [
+                {
+                  "type": "stat",
+                  "label": "今日有效次数",
+                  "value": {"scope": "query", "source": "detail", "field": "daily.valid_count"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "今日正 F 用量",
+                  "value": {"scope": "query", "source": "detail", "field": "daily.positive_f_used"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "今日负 F 用量",
+                  "value": {"scope": "query", "source": "detail", "field": "daily.negative_f_used"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "今日正 M 用量",
+                  "value": {"scope": "query", "source": "detail", "field": "daily.positive_m_used"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "columns": 3,
+              "children": [
+                {
+                  "type": "stat",
+                  "label": "偏好称呼",
+                  "value": {"scope": "query", "source": "detail", "field": "preferred_title"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "本次是否使用称呼",
+                  "value": {"scope": "query", "source": "detail", "field": "title_should_use"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "称呼意愿开关",
+                  "value": {"scope": "query", "source": "detail", "field": "title_opt_in"},
+                  "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}}
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "label": "查询提示",
+              "value": {"scope": "query", "source": "detail", "field": "error"},
+              "when": {"reference": {"scope": "query", "source": "detail", "field": "ok"}, "operator": "equals", "expected": false}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "admin",
+      "title": "管理操作",
+      "description": "手动校正好感、撤销称呼、备份或删除用户状态；所有写操作都会写入审计记录。",
+      "placement": "sidebar",
+      "icon": "settings",
+      "mode": "declarative",
+      "auto_refresh": true,
+      "poll_interval_seconds": 0,
+      "queries": {
+        "user": {
+          "api": "user_state",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string"}
+          }
+        },
+        "audit": {
+          "api": "list_audit",
+          "version": "1"
+        }
+      },
+      "actions": {
+        "adjust": {
+          "api": "adjust_affinity",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string", "required": true},
+            "value": {"type": "number", "required": true, "minimum": -100, "maximum": 100},
+            "mode": {"type": "string", "choices": ["set", "delta"]},
+            "reason": {"type": "string"}
+          }
+        },
+        "reset": {
+          "api": "reset_user",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string", "required": true},
+            "reason": {"type": "string"}
+          }
+        },
+        "revoke": {
+          "api": "revoke_title",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string", "required": true},
+            "reason": {"type": "string"}
+          }
+        },
+        "title": {
+          "api": "set_title_opt_in",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string", "required": true},
+            "enabled": {"type": "boolean", "required": true},
+            "title": {"type": "string"},
+            "reason": {"type": "string"}
+          }
+        },
+        "backup": {
+          "api": "backup_database",
+          "version": "1",
+          "parameters": {
+            "reason": {"type": "string"}
+          }
+        },
+        "remove": {
+          "api": "delete_user",
+          "version": "1",
+          "confirmation": "将删除该用户的全部插件状态与事件记录，且不可恢复，确认继续？",
+          "parameters": {
+            "user_id": {"type": "string", "required": true},
+            "reason": {"type": "string"}
+          }
+        }
+      },
+      "content": [
+        {
+          "type": "input",
+          "name": "user_id",
+          "label": "用户 QQ 号或完整身份键",
+          "value": ""
+        },
+        {
+          "type": "card",
+          "label": "当前用户",
+          "children": [
+            {
+              "type": "grid",
+              "columns": 4,
+              "children": [
+                {
+                  "type": "stat",
+                  "label": "好感 F",
+                  "value": {"scope": "query", "source": "user", "field": "affinity"},
+                  "when": {"reference": {"scope": "query", "source": "user", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "偏移 D",
+                  "value": {"scope": "query", "source": "user", "field": "offset"},
+                  "when": {"reference": {"scope": "query", "source": "user", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "有效心情 E",
+                  "value": {"scope": "query", "source": "user", "field": "effective"},
+                  "when": {"reference": {"scope": "query", "source": "user", "field": "ok"}}
+                },
+                {
+                  "type": "stat",
+                  "label": "互动反应",
+                  "value": {"scope": "query", "source": "user", "field": "reaction"},
+                  "when": {"reference": {"scope": "query", "source": "user", "field": "ok"}}
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "label": "查询提示",
+              "value": {"scope": "query", "source": "user", "field": "error"},
+              "when": {"reference": {"scope": "query", "source": "user", "field": "ok"}, "operator": "equals", "expected": false}
+            }
+          ]
+        },
+        {
+          "type": "card",
+          "label": "操作参数",
+          "children": [
+            {
+              "type": "grid",
+              "columns": 2,
+              "children": [
+                {
+                  "type": "input",
+                  "name": "value",
+                  "label": "好感数值（set 为 0-100 目标值，delta 为增量）",
+                  "value": 0
+                },
+                {
+                  "type": "select",
+                  "name": "mode",
+                  "label": "调整方式",
+                  "value": "set",
+                  "options": [
+                    {"label": "设为目标值", "value": "set"},
+                    {"label": "按增量调整", "value": "delta"}
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "grid",
+              "columns": 2,
+              "children": [
+                {
+                  "type": "switch",
+                  "name": "enabled",
+                  "label": "允许被称呼",
+                  "value": false
+                },
+                {
+                  "type": "input",
+                  "name": "title",
+                  "label": "偏好称呼词（留空表示使用默认）",
+                  "value": ""
+                }
+              ]
+            },
+            {
+              "type": "input",
+              "name": "reason",
+              "label": "备注（写入审计）",
+              "value": ""
+            }
+          ]
+        },
+        {
+          "type": "grid",
+          "label": "管理动作",
+          "columns": 3,
+          "children": [
+            {
+              "type": "button",
+              "label": "调整好感",
+              "action": "adjust",
+              "variant": "primary",
+              "disabled_reason": "请先填写一个存在的用户",
+              "disabled_when": {"reference": {"scope": "query", "source": "user", "field": "ok"}, "operator": "equals", "expected": false}
+            },
+            {
+              "type": "button",
+              "label": "重置为刚认识",
+              "action": "reset",
+              "variant": "primary",
+              "disabled_reason": "请先填写一个存在的用户",
+              "disabled_when": {"reference": {"scope": "query", "source": "user", "field": "ok"}, "operator": "equals", "expected": false}
+            },
+            {
+              "type": "button",
+              "label": "撤销称呼许可",
+              "action": "revoke",
+              "variant": "primary",
+              "disabled_reason": "请先填写一个存在的用户",
+              "disabled_when": {"reference": {"scope": "query", "source": "user", "field": "ok"}, "operator": "equals", "expected": false}
+            },
+            {
+              "type": "button",
+              "label": "保存称呼意愿",
+              "action": "title",
+              "variant": "primary",
+              "disabled_reason": "请先填写一个存在的用户",
+              "disabled_when": {"reference": {"scope": "query", "source": "user", "field": "ok"}, "operator": "equals", "expected": false}
+            },
+            {
+              "type": "button",
+              "label": "备份数据库",
+              "action": "backup",
+              "variant": "muted"
+            },
+            {
+              "type": "button",
+              "label": "删除该用户状态",
+              "action": "remove",
+              "variant": "danger",
+              "disabled_reason": "请先填写一个存在的用户",
+              "disabled_when": {"reference": {"scope": "query", "source": "user", "field": "ok"}, "operator": "equals", "expected": false}
+            }
+          ]
+        },
+        {
+          "type": "table",
+          "label": "最近管理审计",
+          "value": {"scope": "query", "source": "audit", "field": "items"},
+          "columns": [
+            {"field": "time_utc", "label": "时间"},
+            {"field": "actor_key", "label": "操作者"},
+            {"field": "operation", "label": "操作"},
+            {"field": "target_key", "label": "作用对象"}
+          ],
+          "when": {"reference": {"scope": "query", "source": "audit", "field": "ok"}}
+        }
+      ]
+    }
+  ]
+}
