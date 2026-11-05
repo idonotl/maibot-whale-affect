@@ -18,8 +18,8 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
-import sys
 import os
+import sys
 import unittest
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -310,7 +310,7 @@ class PluginApiContractTest(unittest.TestCase):
     def test_api_count_matches_declaration(self) -> None:
         """14 个 API 是当前页面的依赖面，减少会留下死按钮。"""
 
-        self.assertEqual(len(declared_apis()), 14)
+        self.assertEqual(len(declared_apis()), 15)
 
     def test_all_api_versions_are_one(self) -> None:
         """页面统一绑定 v1；升版本时必须同步改 webui.json。"""

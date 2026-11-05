@@ -3,6 +3,7 @@ from dataclasses import replace
 import asyncio
 import json
 import time
+import unittest
 
 from test_plugin import PluginTestCase, message_dict, make_config, SESSION_ID, GROUP_SESSION_ID, BOT_ACCOUNT
 from whale_affect_under_test import host_adapter
@@ -262,3 +263,7 @@ def replace_dict(value, **changes):
     result = dict(value)
     result.update(changes)
     return result
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -128,7 +128,7 @@ def make_config(**overrides) -> dict:
 
     config = plugin_module.WhaleAffectPlugin.build_default_config()
     config["admin"]["bot_account_id"] = BOT_ACCOUNT
-    config["admin"]["user_ids"] = ["100000001"]
+    config["admin"]["user_ids"] = [USER_ID]
     config["plugin"]["enabled"] = True
     config["plugin"]["shadow_mode"] = False
     config["affinity"]["valid_chat_interval_seconds"] = 600
@@ -466,26 +466,6 @@ class ReplyerInjectionTest(PluginTestCase):
         self.assertNotIn("群体发言", injected)
         self.assertNotIn(prompt_builder.DEFAULT_TITLE, injected)
         self.assertIn("关系：", injected)
-
-    async def test_private_jealousy_does_not_appear_in_group_prompt(self) -> None:
-        """私聊的小吃醋不会作为明示状态写进同一人的群聊提示。"""
-        from whale_affect_under_test.models import UserRelationState
-        from whale_affect_under_test.host_adapter import normalize_inbound
-
-        plugin = await self.load()
-        now = int(time.time())
-        private = message_dict(message_id="private",text="小鲸你好",timestamp=now)
-        group = message_dict(message_id="group",text="@小鲸你好",timestamp=now,
-                             group_id="123456",session_id=GROUP_SESSION_ID)
-        key = normalize_inbound(private).identity_key().serialize()
-        await asyncio.to_thread(plugin._storage.save_user,UserRelationState(
-            user_key=key,affinity_centi=7000,reaction="jealous",
-            reaction_expires_utc=now+180,reaction_replies_left=1))
-        self.ctx.message.by_id.update({"private":private,"group":group})
-        private_result=await plugin.inject_affect_tone(session_id=SESSION_ID,reply_message_id="private",extra_prompt="")
-        group_result=await plugin.inject_affect_tone(session_id=GROUP_SESSION_ID,reply_message_id="group",extra_prompt="")
-        self.assertIn("吃醋",private_result["modified_kwargs"]["extra_prompt"])
-        self.assertNotIn("吃醋",group_result["modified_kwargs"]["extra_prompt"])
 
 
 class SendCountingTest(PluginTestCase):

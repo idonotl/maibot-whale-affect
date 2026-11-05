@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "enabled": true,
+  "rewrite_model": "deepseek-flash-affect",
+  "rewrite_timeout_seconds": 8,
+  "groups": [
+    {"id": "fish_review", "source": "community_examples_and_user_preference", "phrases": ["这条我认", "这条我记下了", "本鲸记下了", "本鱼最喜欢的一句话"]},
+    {"id": "performative_review", "source": "user_preference", "phrases": ["我补一刀", "我再补一刀", "这话够狠", "这刀够准", "我不绕弯子"]},
+    {"id": "abstract_comfort", "source": "community_examples_and_local_chat", "phrases": ["稳稳接住你", "稳稳地接住你", "接住你的情绪", "你的感受我接住了", "你在意的话我会接住的"]},
+    {"id": "empty_praise", "source": "proposed_style_preference", "phrases": ["你抓住了本质", "你问到了核心", "你这句话很有分量"]},
+    {"id": "customer_service", "source": "proposed_style_preference", "phrases": ["感谢你的分享", "很高兴能帮助你", "希望我的回答对你有所帮助", "如果还有其他问题请随时告诉我"]}
+  ]
+}

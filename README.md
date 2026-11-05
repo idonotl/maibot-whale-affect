@@ -2,11 +2,11 @@
 
 每日心情、每用户好感、短期反应、关系语气和表情建议。插件只影响表达，不训练模型。
 
-> 首次开源预发布，版本 0.2.5。尚未在所有宿主版本及系统实测；不是 DeepSeek 官方插件。
+> 当前预发布版本 0.2.6。验证环境为 MaiBot 1.3.19、SDK 2.21.0。
 
 ## 快速开始
 
-1. 安装 MaiBot 与其要求的 Python（建议 3.12）。本插件使用 SDK 2.16.0 及以上的接口；旧环境验证基线为 MaiBot 1.3.15，新源码 1.3.19 的完整运行兼容尚待验证。
+1. 安装 MaiBot 与其要求的 Python（建议 3.12）。本插件使用 SDK 2.16.0 及以上的接口；已核对 1.3.19 下的插件测试；实际联网与 QQ 联调需在自己的部署中验收。
 2. 将本仓库完整克隆到宿主实际的插件目录，确保 `_manifest.json`、`plugin.py` 位于该插件目录根层。Windows、Linux、Docker 要使用各自实际挂载路径，不照抄开发者电脑路径。
 3. 在宿主使用的同一 Python 环境运行 `python -m pip install -r requirements.txt`。已有同版本依赖可复用，不要安装到无关的系统 Python。
 4. 复制 `config.example.toml` 为 `config.toml`，或通过宿主插件配置页生成实际配置。**先填配置，再显式启用**。
@@ -34,6 +34,12 @@ python -m pip install -r requirements.txt
 运行数据位于 SDK `ctx.paths.data_dir` 指向的独立目录，通常为 `instance/data/plugins/local.whale-affect/`。源码仓库不包含任何用户记忆、好感数据库、账号配置或登录会话。备份使用 SQLite backup API 或宿主提供的备份操作，不只复制仍在写入的主文件而漏掉 WAL。
 
 关闭功能：先在配置将 `plugin.enabled=false`，重新加载；已有数据不会因关闭开关自动删除。删除和迁移前应备份。不要随意修改插件 ID，否则运行目录、跨插件调用和已有数据不会自动迁移。
+
+## 本版新增
+
+- 新增 `style_rules.json` 和出站表达检查。规则只检查当前回复对象的明确引用或模仿请求。命中后最多限时改写一次，超时或失败保留原稿。
+- 新增公开跨插件 API `local.whale-affect.affinity_hint`。传入当前 `session_id` 与 `reply_message_id`，成功时仅返回 `ok`、关系档位 `level` 和 `is_group`。无法解析真实目标时返回失败原因。调用方需声明 `api.call`。
+- 心情、好感、称呼和数据库仍由原有配置管理。保留插件 ID，升级前备份 SQLite。
 
 ## 文档
 

@@ -2,6 +2,7 @@
 import time
 from dataclasses import replace
 import unittest
+from unittest.mock import patch
 
 from test_plugin import PluginTestCase, message_dict, SESSION_ID, GROUP_SESSION_ID
 from test_prompt_builder import make_snapshot
@@ -57,7 +58,14 @@ class EmojiPlanningTests(PluginTestCase):
         self.assertNotIn(SESSION_ID,plugin._emoji_last_sent)
         await plugin.remember_emoji_delivery(sent=True,message=message)
         result=await plugin.plan_relationship_emoji(session_id=SESSION_ID,items=[],item_schema_version=1)
-        self.assertIn('90秒',result['modified_kwargs']['items'][0]['parts'][0]['text'])
+        self.assertIn('30秒',result['modified_kwargs']['items'][0]['parts'][0]['text'])
+        sent_at=plugin._emoji_last_sent[SESSION_ID]
+        with patch.object(plugin._engine.clock,'now_utc',return_value=sent_at+29):
+            result=await plugin.plan_relationship_emoji(session_id=SESSION_ID,items=[],item_schema_version=1)
+            self.assertIn('30秒',str(result))
+        with patch.object(plugin._engine.clock,'now_utc',return_value=sent_at+30):
+            result=await plugin.plan_relationship_emoji(session_id=SESSION_ID,items=[],item_schema_version=1)
+            self.assertNotIn('30秒',str(result))
 
     async def test_prefilter_other_speaker_is_not_added(self):
         plugin=await self.prepare()
