@@ -346,6 +346,61 @@ class EngineTestCase(unittest.TestCase):
             self.engine_config.valid_chat_gain_centi,
         )
 
+    def test_affectionate_tease_pouts_only_sometimes_for_close_users(self) -> None:
+        """关系够近时昵称调侃偶尔升级为短暂赌气，不扣分、会自愈。"""
+
+        self.storage.save_user(UserRelationState(user_key=USER_KEY, affinity_centi=7000))
+        selected = self.jealousy_id(0.0, 0.12, prefix="pout")
+        first = self.engine.apply(
+            self.make_event(EventCategory.AFFECTIONATE_TEASE.value, message_id=selected), BASE_NOW
+        )
+        self.assertEqual(first.snapshot.reaction, Reaction.POUT.value)
+        self.assertEqual(first.delta_mood_centi, 0)
+        self.assertEqual(first.delta_offset_centi, 0)
+        self.assertEqual(
+            first.snapshot.reaction_expires_utc, BASE_NOW + self.engine_config.pout_ttl_seconds
+        )
+
+        # 冷却期内再调侃不重复赌气。
+        second = self.engine.apply(
+            self.make_event(
+                EventCategory.AFFECTIONATE_TEASE.value,
+                now=BASE_NOW + 60,
+                message_id=self.jealousy_id(0.0, 0.12, prefix="again"),
+            ),
+            BASE_NOW + 60,
+        )
+        self.assertIn("pout_not_selected", second.suppressed)
+
+        # 到期后自愈，不需要用户反复哄。
+        expired = self.engine.apply(
+            self.make_event(
+                EventCategory.FRIENDLY_CHAT.value,
+                now=BASE_NOW + self.engine_config.pout_ttl_seconds + 1,
+                message_id=self.jealousy_id(0.0, 0.12, prefix="later"),
+            ),
+            BASE_NOW + self.engine_config.pout_ttl_seconds + 1,
+        )
+        self.assertEqual(expired.snapshot.reaction, Reaction.NONE.value)
+
+    def test_affectionate_tease_pout_never_shows_for_stranger_or_group(self) -> None:
+        """生人与群聊只调侃不赌气；受伤状态也不被昵称覆盖。"""
+
+        self.storage.save_user(UserRelationState(user_key=USER_KEY, affinity_centi=7000))
+        draw = self.jealousy_id(0.0, 0.12, prefix="gate")
+        group = self.engine.apply(
+            self.make_event(EventCategory.AFFECTIONATE_TEASE.value, is_group=True, message_id=draw),
+            BASE_NOW,
+        )
+        self.assertEqual(group.snapshot.reaction, Reaction.NONE.value)
+        stranger = self.engine.apply(
+            self.make_event(
+                EventCategory.AFFECTIONATE_TEASE.value, user_key=OTHER_USER_KEY, message_id=draw
+            ),
+            BASE_NOW,
+        )
+        self.assertEqual(stranger.snapshot.reaction, Reaction.NONE.value)
+
     def test_comfort_clears_hurt(self) -> None:
         """安慰可以提前清除 hurt。"""
 
@@ -377,9 +432,11 @@ class EngineTestCase(unittest.TestCase):
     def test_reply_consumes_reaction_quota(self) -> None:
         """成功回复会消耗 reaction 的剩余次数。"""
 
-        self.engine.apply(self.make_event(EventCategory.COMFORT.value), BASE_NOW)
+        self.engine.apply(self.make_event(EventCategory.MILD_ATTACK.value), BASE_NOW)
+        self.engine.apply(self.make_event(EventCategory.COMFORT.value, now=BASE_NOW + 1), BASE_NOW + 1)
+        self.assertEqual(self.snapshot(now=BASE_NOW + 1).reaction, Reaction.SOOTHED.value)
         for index in range(self.engine_config.soothed_max_replies):
-            self.engine.record_successful_reply(USER_KEY, BOT_KEY, BASE_NOW + index)
+            self.engine.record_successful_reply(USER_KEY, BOT_KEY, BASE_NOW + 1 + index)
         self.assertEqual(self.snapshot(now=BASE_NOW + 5).reaction, Reaction.NONE.value)
 
     def test_comfort_only_restores_offset_to_zero(self) -> None:

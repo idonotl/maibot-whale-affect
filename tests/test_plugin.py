@@ -128,7 +128,7 @@ def make_config(**overrides) -> dict:
 
     config = plugin_module.WhaleAffectPlugin.build_default_config()
     config["admin"]["bot_account_id"] = BOT_ACCOUNT
-    config["admin"]["user_ids"] = [USER_ID]
+    config["admin"]["user_ids"] = ["100000001"]
     config["plugin"]["enabled"] = True
     config["plugin"]["shadow_mode"] = False
     config["affinity"]["valid_chat_interval_seconds"] = 600

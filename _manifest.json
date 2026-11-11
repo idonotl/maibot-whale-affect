@@ -1,9 +1,9 @@
 {
   "manifest_version": 2,
   "id": "local.whale-affect",
-  "version": "0.2.6",
+  "version": "0.2.8",
   "name": "小鲸鱼心情与好感度",
-  "description": "每日心情、长期好感、短期情绪及出站表达约束。",
+  "description": "为麦麦提供每日心情、每用户长期好感与短期情绪反应的本地状态系统，并按状态注入自然语气提示。",
   "author": {
     "name": "idonotl",
     "url": "https://github.com/idonotl"

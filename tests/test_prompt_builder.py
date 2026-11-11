@@ -63,6 +63,15 @@ class PromptBuilderTestCase(unittest.TestCase):
         self.assertLessEqual(info["cjk_length"], 300)
         self.assertNotIn(pb.DEFAULT_TITLE, block)
 
+    def test_all_relationship_mood_and_reaction_combinations_fit_budget(self) -> None:
+        for affinity in (1000, 2500, 4500, 6500, 9000):
+            for mood in (1000, 4000, 6000, 7000, 9500):
+                for reaction in ('none', 'hurt', 'soothed', 'pout', 'jealous'):
+                    with self.subTest(affinity=affinity, mood=mood, reaction=reaction):
+                        block = pb.build_private_block(make_snapshot(
+                            affinity_centi=affinity, effective_centi=mood, reaction=reaction))
+                        self.assertLessEqual(pb.block_char_length(block), 300)
+
     def test_reaction_hurt_is_reflected(self) -> None:
         """受伤状态必须写进块，且要求不许阴阳怪气。"""
 

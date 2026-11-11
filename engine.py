@@ -574,6 +574,13 @@ class AffectEngine:
                 category = EventCategory.FRIENDLY_CHAT.value
                 suppressed.append("jealousy_not_selected")
 
+        pout_selected = (
+            category == EventCategory.AFFECTIONATE_TEASE.value
+            and self._pout_selected(event, user, now_utc)
+        )
+        if category == EventCategory.AFFECTIONATE_TEASE.value and not pout_selected:
+            suppressed.append("pout_not_selected")
+
         attack = category in ATTACK_CATEGORIES
         positive_semantic = category in POSITIVE_SEMANTIC_CATEGORIES
 
@@ -609,7 +616,7 @@ class AffectEngine:
                 allow_semantic = False
 
         # 3) 确定 reaction（与是否仍有计分预算无关）
-        decision = self._decide_reaction(category, user, now_utc)
+        decision = self._decide_reaction(category, user, now_utc, pout=pout_selected)
 
         # 4) 语义增量
         delta_m, delta_d, delta_f = SCORE_TABLE[category] if allow_semantic else (0, 0, 0)
@@ -796,6 +803,8 @@ class AffectEngine:
             self._storage.set_cooldown(event.user_key, "positive_semantic", now_utc, text_hash)
         if category == EventCategory.JEALOUSY_CANDIDATE.value:
             self._storage.set_cooldown(event.user_key, "jealousy", now_utc, text_hash)
+        if pout_selected:
+            self._storage.set_cooldown(event.user_key, "pout", now_utc, text_hash)
 
         self._storage.save_mood(updated_mood)
         self._storage.save_user(updated_user)
@@ -866,11 +875,40 @@ class AffectEngine:
 
         return "group" if event.is_group else "private"
 
+    def _pout_selected(self, event: AffectEvent, user: UserRelationState, now_utc: int) -> bool:
+        """昵称调侃是否升级成短暂赌气。
+
+        赌气只在私聊、关系够近、且距上次赌气足够久时偶尔发生，其余调侃交给
+        回复模型按语境轻松接梗，避免她把爱称记成真实矛盾。
+
+        Args:
+            event: 当前事件。
+            user: 事件之前的用户状态。
+            now_utc: 当前 UTC 时间戳。
+
+        Returns:
+            bool: 是否进入 pout。
+        """
+
+        if event.is_group or user.reaction == Reaction.HURT.value:
+            return False
+        affinity = user.affinity_centi
+        if affinity < 6000:
+            return False
+        chance = 0.12 if affinity < 8000 else 0.20
+        cooldown = self._storage.get_cooldown(event.user_key, "pout")
+        if cooldown is not None and now_utc - cooldown[0] < 1800:
+            return False
+        draw = int.from_bytes(hashlib.sha256(event.event_key.encode("utf-8")).digest()[:8], "big") / 2**64
+        return draw < chance
+
     def _decide_reaction(
         self,
         category: str,
         user: UserRelationState,
         now_utc: int,
+        *,
+        pout: bool = False,
     ) -> ReactionDecision:
         """根据事件类别决定临时反应。
 
@@ -878,6 +916,7 @@ class AffectEngine:
             category: 事件类别。
             user: 当前用户状态。
             now_utc: 当前 UTC 时间戳。
+            pout: 本次昵称调侃是否被选中为短暂赌气。
 
         Returns:
             ReactionDecision: reactor 决策。
@@ -903,11 +942,22 @@ class AffectEngine:
                     keep_expires_utc=user.reaction_expires_utc,
                 )
             # Persona nicknames are normal playful address, not a persistent mood.
-            # Let the reply model occasionally joke back without requiring protest
-            # across subsequent replies or waiting for the user to comfort it.
+            # Most teasing is left to the reply model so she can joke back without
+            # demanding comfort; a close user's teasing occasionally turns into a
+            # short-lived pout that clears on its own.
+            if pout:
+                return ReactionDecision(
+                    Reaction.POUT.value,
+                    cfg.pout_ttl_seconds,
+                    cfg.pout_max_replies,
+                    True,
+                )
             return ReactionDecision(Reaction.NONE.value, 0, 0, False)
         if category in (EventCategory.COMFORT.value, EventCategory.APOLOGY.value):
-            return ReactionDecision(Reaction.SOOTHED.value, cfg.soothed_ttl_seconds, cfg.soothed_max_replies, True)
+            # Kindness can raise mood without establishing an earlier injury.
+            # Only describe recovery when an actual negative state existed.
+            if current in (Reaction.HURT.value, Reaction.JEALOUS.value, Reaction.POUT.value) or user.offset_centi < 0:
+                return ReactionDecision(Reaction.SOOTHED.value, cfg.soothed_ttl_seconds, cfg.soothed_max_replies, True)
         return ReactionDecision(
             current,
             0,

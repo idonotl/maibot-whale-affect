@@ -24,7 +24,7 @@ def _settings(**overrides: Any) -> module.SemanticSettings:
 
     base: Dict[str, Any] = {
         "enabled": True,
-        "model_name": "deepseek-flash-affect",
+        "model_task": "fast_model",
         "min_confidence": 0.8,
         "timeout_seconds": 1.0,
         "max_concurrency": 1,
@@ -268,9 +268,9 @@ class SettingsTest(unittest.TestCase):
     def test_defaults_match_spec(self) -> None:
         settings = module.SemanticSettings()
         self.assertFalse(settings.enabled)
-        self.assertEqual("deepseek-flash-affect", settings.model_name)
+        self.assertEqual("fast_model", settings.model_task)
         self.assertAlmostEqual(0.8, settings.min_confidence)
-        self.assertAlmostEqual(8.0, settings.timeout_seconds)
+        self.assertAlmostEqual(110.0, settings.timeout_seconds)
         self.assertEqual(1, settings.max_concurrency)
         self.assertEqual(100, settings.queue_capacity)
         self.assertEqual(6, settings.global_calls_per_minute)
@@ -281,7 +281,7 @@ class SettingsTest(unittest.TestCase):
     def test_from_section_reads_attributes(self) -> None:
         class Section:
             llm_enabled = True
-            model_name = "custom-alias"
+            model_task = "utils"
             min_confidence = 0.9
             timeout_seconds = 5.0
             max_concurrency = 2
@@ -293,23 +293,23 @@ class SettingsTest(unittest.TestCase):
 
         settings = module.SemanticSettings.from_section(Section())
         self.assertTrue(settings.enabled)
-        self.assertEqual("custom-alias", settings.model_name)
+        self.assertEqual("utils", settings.model_task)
         self.assertEqual(2, settings.max_concurrency)
         self.assertEqual(20, settings.queue_capacity)
 
     def test_from_section_tolerates_missing_fields(self) -> None:
         class Section:
             llm_enabled = None
-            model_name = None
+            model_task = None
 
         settings = module.SemanticSettings.from_section(Section())
         self.assertFalse(settings.enabled)
-        self.assertEqual("deepseek-flash-affect", settings.model_name)
-        self.assertAlmostEqual(8.0, settings.timeout_seconds)
+        self.assertEqual("fast_model", settings.model_task)
+        self.assertAlmostEqual(110.0, settings.timeout_seconds)
 
     def test_describe_settings_has_no_secrets(self) -> None:
         described = module.describe_settings(module.SemanticSettings())
-        self.assertIn("model_name", described)
+        self.assertIn("model_task", described)
         self.assertNotIn("api_key", described)
 
 

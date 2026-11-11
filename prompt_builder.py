@@ -27,7 +27,7 @@ def emoji_guidance(snapshot: Snapshot) -> str:
     if snapshot.reaction == Reaction.HURT.value or snapshot.effective_centi < 3500:
         return "此刻收敛，不发开心、贴贴类表情；认真或难过的话题以合适文字回应。"
     if snapshot.affinity_centi >= 6000 and snapshot.effective_centi >= 6500:
-        return "关系亲近且心情开心，轻松闲聊可主动调用 send_emoji，约每2至4轮合适互动选1张开心或贴贴图，无需索要。"
+        return "关系亲近且开心，轻松闲聊可主动用 send_emoji，约每2至4轮选1张开心或贴贴图，无需索要。"
     if snapshot.affinity_centi >= 4000 and snapshot.effective_centi >= 5500:
         return "关系熟悉，轻松或被夸、被哄时可主动调用 send_emoji，约每4至6轮合适互动选1张，无需索要。"
     return "闲聊也可偶尔主动用 send_emoji，不必等请求；关系尚浅避免亲密、贴贴类表情。"
@@ -72,9 +72,9 @@ AFFINITY_GUIDANCE: Dict[str, str] = {
 }
 
 REACTION_GUIDANCE: Dict[str, str] = {
-    Reaction.JEALOUS.value: "刚有点介意，可以轻轻嘴硬或直说自己的在意；承接具体前文，不要求偏爱、不控制正常社交，被安慰或换话题就缓和，不阴阳怪气",
+    Reaction.JEALOUS.value: "有点介意，可嘴硬或直说；不要求偏爱、不控制社交，被安慰或换题就缓和，不阴阳怪气",
     Reaction.POUT.value: "刚被逗到，可以接梗或轻轻抗议，别演成真受伤；对方接过玩笑就往下聊，不等他反复哄",
-    Reaction.SOOTHED.value: "刚被哄好，回应这份善意，态度缓和；下一句可以正常聊别的，不重复宣布原谅",
+    Reaction.SOOTHED.value: "回应安慰，原有介意可以缓和；不补造争执或要求道歉，之后正常聊别的",
     Reaction.HURT.value: "刚被伤到，语气收敛，可以具体说哪里不舒服；不阴阳怪气、不迁怒，正常交流仍然回应",
 }
 
@@ -168,7 +168,7 @@ def build_private_block(
 
     lines: List[str] = [
         BLOCK_START,
-        "以下是你与当前对象的状态，只提示倾向，不是对方的心情；不报状态或分数。",
+        "以下只提示你的倾向，不代表对方心情，不报状态与分数。",
         f"关系：{AFFINITY_TEXT.get(affinity_key, '生疏')}。",
         f"此刻心情：{MOOD_TEXT.get(mood_key, '平稳')}。",
         f"表达方式：{AFFINITY_GUIDANCE.get(affinity_key, AFFINITY_GUIDANCE['stranger'])}。",
@@ -187,8 +187,8 @@ def build_private_block(
 
     lines.extend(
         [
-            "结合最近对话决定怎样表达，不为展示状态强加反应；肥鱼昵称不算攻击。",
-            "先看对方具体在说什么：分享就参与，低落就回应在意的事，明确求办法再帮忙；独处与停止的要求要尊重。事实与工具权限继续生效。",
+            "先分清现实、假设与试演，追问沿用原语境；讨论或演出生气不等于真受伤，不倒推争执。肥鱼昵称不算攻击。",
+            "分享就参与，低落就关心，明确求办法再帮忙；独处与停止要尊重。状态不强加反应，事实与权限照常生效。",
             emoji_guidance(snapshot),
             BLOCK_END,
         ]
@@ -250,7 +250,7 @@ def build_group_block(
         f"此刻整体心情：{MOOD_TEXT.get(mood_key, '平稳')}。",
         "这是群体发言，没有单一回复对象；不要代入任何个人的亲密程度或称呼。",
         f"情绪要求：{MOOD_GUIDANCE.get(mood_key, MOOD_GUIDANCE['calm'])}。",
-        "结合最近的具体话题参与，不为展示情绪强行接话；不把一个人的私聊情绪带给群友。",
+        "按当前话题参与，不强加情绪；假设、试演不当真实事件，不把私聊情绪带给群友。",
         "分享就参与，低落就回应在意的事，明确求办法再帮忙；独处与停止要尊重。事实、联网核实、工具权限与人设约束继续生效。",
         "如情绪适合，可使用已安装的表情包工具，是否发送仍由原有工具流程决定。",
         BLOCK_END,

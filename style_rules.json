@@ -1,7 +1,7 @@
 {
   "version": 1,
   "enabled": true,
-  "rewrite_model": "deepseek-flash-affect",
+  "rewrite_task": "fast_model",
   "rewrite_timeout_seconds": 8,
   "groups": [
     {"id": "fish_review", "source": "community_examples_and_user_preference", "phrases": ["这条我认", "这条我记下了", "本鲸记下了", "本鱼最喜欢的一句话"]},

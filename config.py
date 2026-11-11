@@ -276,6 +276,12 @@ class ScoringSectionConfig(PluginConfigBase):
         description="连续对话延续判定窗口",
         json_schema_extra={"label": "连续对话窗口", "order": 5, "step": 30},
     )
+    reply_echo_window_seconds: int = Field(
+        default=600,
+        gt=0,
+        description="同一条已完整送达的回复仍视为「刚说过」的窗口",
+        json_schema_extra={"label": "复读抑制窗口", "order": 6, "step": 60},
+    )
 
 
 class ClassifierSectionConfig(PluginConfigBase):
@@ -290,10 +296,10 @@ class ClassifierSectionConfig(PluginConfigBase):
         description="是否启用异步模型分类（规则版稳定后再开启）",
         json_schema_extra={"label": "启用模型分类", "order": 0},
     )
-    model_name: str = Field(
-        default="deepseek-flash-affect",
-        description="使用的模型配置别名，不是供应商 model_identifier",
-        json_schema_extra={"label": "模型别名", "order": 1},
+    model_task: str = Field(
+        default="fast_model",
+        description="使用的 MaiBot 模型任务，按其候选列表切换",
+        json_schema_extra={"label": "模型任务", "order": 1},
     )
     min_confidence: float = Field(
         default=0.8,
@@ -303,9 +309,9 @@ class ClassifierSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "最小置信度", "order": 2, "step": 0.05},
     )
     timeout_seconds: float = Field(
-        default=8.0,
+        default=110.0,
         gt=0,
-        description="单次分类调用超时，不做插件级重试",
+        description="后台分类总等待时间，含候选模型切换，不做插件级重试",
         json_schema_extra={"label": "超时", "order": 3, "step": 1},
     )
     max_concurrency: int = Field(

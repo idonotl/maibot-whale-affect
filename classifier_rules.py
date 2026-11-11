@@ -76,6 +76,14 @@ _MILD_PATTERNS: Sequence[str] = (
     r"无聊",
     r"讨厌",
     r"烦人",
+    # 不耐烦与「讨厌」同类，但裸「烦」不收录：「今天真烦，你呢」说的是他自己的日子，
+    # 「麻烦」更不是辱骂。只承认明确指向她的说法。
+    r"你真烦",
+    r"你好烦",
+    r"你可真烦",
+    r"你烦不烦",
+    r"别烦我",
+    r"(?<!麻)烦死你了",
     r"闭嘴",
     r"滚",
     r"辣鸡",
@@ -83,9 +91,16 @@ _MILD_PATTERNS: Sequence[str] = (
     r"菜鸡",
 )
 
+# 否定式夸奖只承认直接修饰贬义词的否定。裸「你不」会把疑问句读成夸奖
+# （「你是不是傻」「你不觉得他很烦吗」），所以否定后禁止「是」，
+# 允许的语气词只有「那么/这么」这类程度词，且不得跨过逗号或句末标点。
 _NEGATED_INSULT_PATTERN = re.compile(
-    r"(?:你才不|你才不是|你一点都不|你根本不|你一点儿也不|你并不|你没有|你不|才不|一点也不)"
-    r"[^。！？!?\n]{0,4}?"
+    r"(?:你才不是|你才不|你?根本不|你?压根不|你?压根儿不|你?完全不"
+    r"|你?并不|你?并不是|你?从来不|你?从不|你?一点不|你?一点都不|你?一点儿不"
+    r"|你没有|你不|才不|一点也不)"
+    r"(?!是)"
+    r"(?:那么|这么|那样|这样)?"
+    r"[^。！？!?\n，,；;]{0,2}?"
     r"(?:笨|蠢|傻|丑|肥|胖|没用|讨厌|烦)"
 )
 
@@ -192,6 +207,23 @@ _GREETING_PATTERN = re.compile(
 )
 
 _SECOND_PERSON_PATTERN = re.compile(r"你|您|u\b")
+
+# Questions about a possible interaction describe a scene, not an event that
+# has happened. Keep this narrow: a real insult outside the hypothetical still
+# takes priority, and ordinary reassuring questions remain actual comfort.
+_HYPOTHETICAL_INTERACTION = re.compile(
+    r"^(?:(?:那|比如|例如)[,，:： ]*)?(?:如果|假如|假设|要是)"
+    r"[^。!?！？;；]{1,140}(?:你会|会不会|会怎么|会怎样|什么反应|算不算|会生气)"
+    r"[^。!?！？;；]{0,32}[?？]?$"
+)
+_ACTUAL_ASSERTION = re.compile(r"但|不过|其实|事实上|另外|说真的|你本来|你就是")
+_INTERACTION_DESCRIPTION = re.compile(
+    r"(?:你|她)(?:在)?(?:生气|愤怒|难过|被哄|被安慰)(?:的?时候)?(?:会|是|要|什么|怎么|怎样)"
+    r"|(?:怎么|如何|怎样)(?:才算|才是|才会|算)?(?:哄|安慰|道歉)"
+    r"|(?:哄|安慰|道歉)(?:的意思|是什么|指什么|怎么做)"
+    r"|是你[^。!?！？;；]{0,12}道歉[?？,， ]*还是[^。!?！？;；]{0,16}(?:哄|安慰)"
+    r"|你会[^。!?！？;；]{0,12}(?:什么|哪种)[^。!?！？;；]{0,16}(?:生气|愤怒|哄|安慰)"
+)
 
 # Require the speaker's own plans, another explicit conversational partner,
 # and social conversation. A bare product name or factual question is not enough.
@@ -332,6 +364,9 @@ class RulesClassifier:
         if message.is_group and not addressed:
             return self._other("group_not_addressed")
 
+        if _HYPOTHETICAL_INTERACTION.fullmatch(text) and not _ACTUAL_ASSERTION.search(text):
+            return self._bot(EventCategory.NEUTRAL.value, 0.9, "interaction_description")
+
         # 1) 引用/第三方：不是本人对她的立场
         if any(regex.search(text) for regex in _SELF_PATTERN_REGEX):
             return Classification(
@@ -369,6 +404,9 @@ class RulesClassifier:
         attack = self._detect_attack(stripped, text)
         if attack is not None:
             return attack
+
+        if _INTERACTION_DESCRIPTION.search(text):
+            return self._bot(EventCategory.NEUTRAL.value, 0.88, "interaction_description")
 
         # Real apologies retain priority. "别生气了" alone is reassurance,
         # rather than an admission of an earlier attack.

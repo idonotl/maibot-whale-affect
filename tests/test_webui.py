@@ -33,7 +33,29 @@ from _bootstrap import PACKAGE_NAME, PLUGIN_ROOT, SDK_PATH  # noqa: E402
 plugin_module = __import__(f"{PACKAGE_NAME}.plugin", fromlist=["plugin"])
 
 WEBUI_PATH = PLUGIN_ROOT / "webui.json"
-SCHEMA_PATH = Path(os.environ.get("MAIBOT_HOST_ROOT", "__host_not_configured__")) / "src/plugin_runtime/webui_schema.py"
+
+
+def _schema_path() -> Path:
+    """宿主 ``webui_schema.py`` 的位置。
+
+    ``PLUGIN_ROOT.parents[1]`` 在 ``instance/plugins/<插件>`` 布局下指向
+    ``instance``，而宿主实际在 ``maibot-local/MaiBot``，所以旧写法永远找不到文件，
+    契约测试会在所有人的机器上静默跳过。这里优先用 ``MAIBOT_HOST_ROOT``，
+    再退回到本仓库常见的两种布局。
+    """
+    configured = os.environ.get("MAIBOT_HOST_ROOT")
+    roots = [Path(configured)] if configured else [
+        PLUGIN_ROOT.parents[2] / "MaiBot",
+        PLUGIN_ROOT.parents[1] / "MaiBot",
+    ]
+    for root in roots:
+        found = root / "src" / "plugin_runtime" / "webui_schema.py"
+        if found.is_file():
+            return found
+    return roots[0] / "src" / "plugin_runtime" / "webui_schema.py"
+
+
+SCHEMA_PATH = _schema_path()
 
 # 技术路线 §12 要求的最小功能集，页面可以改名但必须覆盖这些动作。
 REQUIRED_ACTIONS = {"adjust_affinity", "reset_user", "revoke_title", "delete_user", "backup_database"}

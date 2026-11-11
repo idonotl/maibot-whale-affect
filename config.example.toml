@@ -45,12 +45,13 @@ positive_semantic_daily_count_cap = 3
 attack_cooldown_seconds = 60
 source_event_max_age_seconds = 120
 continuation_window_seconds = 120
+reply_echo_window_seconds = 600
 
 [classifier]
 llm_enabled = false
-model_name = "deepseek-flash-affect"
+model_task = "fast_model"
 min_confidence = 0.8
-timeout_seconds = 8.0
+timeout_seconds = 110.0
 max_concurrency = 1
 queue_capacity = 100
 global_calls_per_minute = 6

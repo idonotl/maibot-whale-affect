@@ -4,7 +4,7 @@
 
 先阅读 README、`_manifest.json`、`config.example.toml` 和配置参考。确认宿主版本、Python 环境、实际插件目录、数据目录和模型配置。不要收集或输出密钥，不从使用者原配置复制令牌进 Git。
 
-本指南对应 0.2.6。先核对实际部署的宿主版本和已启用的配置。
+本地旧版本经历过开发测试；本次公开副本经过默认值和隐私调整，测试结果以仓库发布记录为准。不要把版本范围理解为全平台实测。
 
 ## 2. 本插件做什么
 
@@ -13,12 +13,6 @@
 配置 admin.bot_account_id 与 admin.user_ids，先保持 shadow_mode=true，确认模型别名和管理页状态后再开启正式注入。
 
 管理员、私聊和群名单默认不含任何真实用户。配置类要求非空机器人号时，必须填部署者自己的机器人号后才能加载。启用状态和 dry_run/shadow_mode 是独立概念：前者控制启动，后者控制是否实际生效或提交任务。
-
-### 本版接入要点
-
-- 新增 `style_rules.json` 和出站表达检查。规则只检查当前回复对象的明确引用或模仿请求。命中后最多限时改写一次，超时或失败保留原稿。
-- 新增公开跨插件 API `local.whale-affect.affinity_hint`。传入当前 `session_id` 与 `reply_message_id`，成功时仅返回 `ok`、关系档位 `level` 和 `is_group`。无法解析真实目标时返回失败原因。调用方需声明 `api.call`。
-- 心情、好感、称呼和数据库仍由原有配置管理。保留插件 ID，升级前备份 SQLite。
 
 ## 3. 数据与边界
 
@@ -34,12 +28,17 @@ QQ 收发由外部适配器承担。需要 QQ 的功能必须配置适配器并�
 
 已声明入口（具体参数、返回结构和可见性以各 Python 文件及 `webui.json` 为准；不是所有 API 都对其他插件公开）：
 
+- `HookHandler`：`maisaka.reply.before_post_process`（plugin.py）
+- `HookHandler`：`send_service.after_send`（plugin.py）
+- `HookHandler`：`maisaka.replyer.before_request`（plugin.py）
+- `HookHandler`：`maisaka.replyer.after_response`（plugin.py）
 - `HookHandler`：`chat.receive.after_process`（plugin.py）
 - `HookHandler`：`maisaka.planner.before_request`（plugin.py）
 - `HookHandler`：`maisaka.replyer.before_request`（plugin.py）
 - `HookHandler`：`send_service.after_send`（plugin.py）
 - `HookHandler`：`maisaka.planner.before_request`（plugin.py）
 - `HookHandler`：`send_service.after_send`（plugin.py）
+- `API`：`affinity_hint`（plugin.py）
 - `API`：`global_state`（plugin.py）
 - `API`：`user_state`（plugin.py）
 - `API`：`list_users`（plugin.py）
@@ -90,6 +89,7 @@ QQ 收发由外部适配器承担。需要 QQ 的功能必须配置适配器并�
 
 交付时写明：修改文件、依赖和环境要求、配置步骤、测试结果、外网/QQ未验证项、如何关闭和回滚。对于不确定的推断明确标记，不把尝试说成成功。
 
+<!-- 以下由发布整理追加 -->
 ## 本插件的机制与实际使用
 
 状态包含全局每日心情、每用户短期偏移和长期好感。好感身份包含平台和机器人账号，同一 QQ 用户在相同机器人下跨聊天保留关系；群聊注入须解析真实回复对象，不能按群友继承私人称呼。具体身份键见 engine/repository，不把界面昵称用作主键。

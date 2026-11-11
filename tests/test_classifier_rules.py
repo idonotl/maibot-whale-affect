@@ -128,6 +128,28 @@ class RulesClassifierTestCase(unittest.TestCase):
 
         self.assert_event("你才不胖呢", EventCategory.PRAISE.value)
 
+    def test_negated_praise_needs_direct_negation(self) -> None:
+        """否定必须直接修饰贬义词：疑问与转述不算夸奖。"""
+
+        for text in ("你不觉得他很烦吗", "你不理我我很烦", "你是不是傻"):
+            with self.subTest(text=text):
+                result = self.classifier.classify(make_message(text))
+                self.assertNotEqual(result.reason_code, "negated_insult_is_praise")
+        for text in ("你不傻呀", "你根本不笨", "你没有那么笨", "你一点都不烦人"):
+            with self.subTest(text=text):
+                self.assert_event(text, EventCategory.PRAISE.value)
+
+    def test_directed_annoyance_is_mild_attack(self) -> None:
+        """指向她的不耐烦与「讨厌」同级；对自己的烦恼不算攻击。"""
+
+        for text in ("大肥鱼你真烦", "你好烦啊", "你别烦我", "你烦不烦"):
+            with self.subTest(text=text):
+                self.assert_event(text, EventCategory.MILD_ATTACK.value)
+        for text in ("真烦", "烦死人了", "今天合肥下雨了，真烦，你呢", "这事儿太麻烦了", "麻烦你了"):
+            with self.subTest(text=text):
+                result = self.classifier.classify(make_message(text))
+                self.assertNotIn(result.event, (EventCategory.MILD_ATTACK.value, EventCategory.SEVERE_ATTACK.value))
+
     def test_comfort_with_praise(self) -> None:
         """夸奖加摸摸优先作为哄好，不叠加两个语义奖励。"""
 
