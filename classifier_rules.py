@@ -136,6 +136,9 @@ _COMFORT_PATTERNS: Sequence[str] = (
     r"乖(?:乖)?[，,]?\s*不哭",
     r"不哭",
     r"哄你",
+    r"不气不气",
+    r"消消气",
+    r"别生我气",
 )
 
 _APOLOGY_PATTERNS: Sequence[str] = (
@@ -146,6 +149,8 @@ _APOLOGY_PATTERNS: Sequence[str] = (
     r"是我不好",
     r"别生气了",
     r"原谅我",
+    r"我道歉",
+    r"给你道歉",
     r"\bsorry\b",
 )
 
@@ -423,8 +428,9 @@ class RulesClassifier:
             if regex.search(text):
                 return self._bot(EventCategory.CRITICISM.value, 0.88, "normal_correction")
 
-        # Private trial: public group messages must not expose private feelings.
-        if not message.is_group and is_jealousy_candidate(text):
+        # Only messages addressed to the bot reach here, so groups may trigger it;
+        # affinity, cooldown and a prior real hurt state still gate the reaction.
+        if is_jealousy_candidate(text):
             return self._bot(EventCategory.JEALOUSY_CANDIDATE.value, 0.85, "jealousy_candidate")
         if self.mentions_teasing_nickname(text) and addressed:
             return self._bot(EventCategory.AFFECTIONATE_TEASE.value, 0.86, "nickname_tease")

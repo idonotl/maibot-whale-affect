@@ -65,11 +65,12 @@ class RecoveryTests(unittest.TestCase):
         result = self.engine.apply(self.make_event(EventCategory.COMFORT.value, now=BASE_NOW + 30), BASE_NOW + 30)
         self.assertEqual(result.snapshot.reaction, Reaction.SOOTHED.value)
 
-    def test_lingering_negative_offset_can_recover_after_reaction_expires(self):
+    def test_lingering_negative_offset_alone_does_not_fabricate_soothed(self):
         user = self.storage.load_user(USER_KEY, self.engine_config)
         self.storage.save_user(replace(user, offset_centi=-100, offset_local_date='2026-01-01', offset_update_utc=BASE_NOW))
         result = self.engine.apply(self.make_event(EventCategory.COMFORT.value), BASE_NOW)
-        self.assertEqual(result.snapshot.reaction, Reaction.SOOTHED.value)
+        self.assertEqual(result.snapshot.reaction, Reaction.NONE.value)
+        self.assertGreaterEqual(result.delta_offset_centi, 0)
 
 
 class DescriptionPluginIntegrationTests(plugin_test.PluginTestCase):

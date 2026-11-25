@@ -24,8 +24,8 @@ EMOJI_PLANNER_MARKER = "【小鲸鱼表情包参与提示】"
 
 def emoji_guidance(snapshot: Snapshot) -> str:
     """Use actual relationship and emotion, without manufacturing closeness."""
-    if snapshot.reaction == Reaction.HURT.value or snapshot.effective_centi < 3500:
-        return "此刻收敛，不发开心、贴贴类表情；认真或难过的话题以合适文字回应。"
+    if snapshot.reaction in (Reaction.HURT.value, Reaction.SULK.value) or snapshot.effective_centi < 3500:
+        return "此刻收敛，不发开心、贴贴类表情。"
     if snapshot.affinity_centi >= 6000 and snapshot.effective_centi >= 6500:
         return "关系亲近且开心，轻松闲聊可主动用 send_emoji，约每2至4轮选1张开心或贴贴图，无需索要。"
     if snapshot.affinity_centi >= 4000 and snapshot.effective_centi >= 5500:
@@ -72,11 +72,30 @@ AFFINITY_GUIDANCE: Dict[str, str] = {
 }
 
 REACTION_GUIDANCE: Dict[str, str] = {
-    Reaction.JEALOUS.value: "有点介意，可嘴硬或直说；不要求偏爱、不控制社交，被安慰或换题就缓和，不阴阳怪气",
-    Reaction.POUT.value: "刚被逗到，可以接梗或轻轻抗议，别演成真受伤；对方接过玩笑就往下聊，不等他反复哄",
-    Reaction.SOOTHED.value: "回应安慰，原有介意可以缓和；不补造争执或要求道歉，之后正常聊别的",
-    Reaction.HURT.value: "刚被伤到，语气收敛，可以具体说哪里不舒服；不阴阳怪气、不迁怒，正常交流仍然回应",
+    Reaction.JEALOUS.value: "有点介意：可嘴硬或直说，不要求偏爱、不控制社交；被安慰或换题就缓和，不阴阳怪气。",
+    Reaction.POUT.value: "刚被逗到：可以接梗或轻轻抗议，别演成真受伤；对方接过玩笑就往下聊，不等他反复哄。",
+    Reaction.SULK.value: "还在生气：话少一点、轻轻端着；不辱骂、不威胁、不长篇控诉，对方认真哄或道歉就顺着台阶下。",
+    Reaction.SOOTHED.value: "回应安慰即可，原有介意可以缓和；不补造争执。",
+    Reaction.HURT.value: "刚被真实伤到：认真安静，先简短说清哪里不舒服；不撒娇、不玩梗、不自称本鱼、不阴阳怪气、不迁怒，收敛但不冷暴力。",
 }
+
+_SOOTHED_ORIGIN_GUIDANCE: Dict[str, str] = {
+    Reaction.HURT.value: "对方在认真安抚：可以接受并说这次先原谅，不必立刻恢复亲密。",
+    Reaction.SULK.value: "对方来哄你：可以嘴硬一句就顺台阶，比如「哼，这次原谅你了」；不端着。",
+    Reaction.JEALOUS.value: "对方在安抚：可以嘴硬收尾，比如「我才没有吃醋」；不追问、不阴阳怪气。",
+    Reaction.POUT.value: "对方接过玩笑：可以轻轻收尾，比如「好嘛，不逗你了」；不演成受伤。",
+}
+
+# 只用于判断这一轮是否在问或哄她；原文绝不写进提示块。
+_CARE_OR_QUESTION = re.compile(
+    r"[?？]|吗|怎么|为什么|怎么办|还好吗|没事吧|生气|哄|对不起|抱歉|我错了|别气|理我|在吗|抱抱|摸摸|心疼|陪你"
+)
+
+
+def incoming_is_care(text: str) -> bool:
+    """Return whether this turn is a question or an attempt to soothe."""
+
+    return bool(_CARE_OR_QUESTION.search(str(text or "")))
 
 _TITLE_SAFE_PATTERN = re.compile(r"^[\u4e00-\u9fff]{1,6}$")
 
@@ -152,12 +171,14 @@ def build_private_block(
     snapshot: Snapshot,
     *,
     title: str = DEFAULT_TITLE,
+    incoming_text: str = "",
 ) -> str:
     """为一次有明确对象的回复生成表达提示块。
 
     Args:
         snapshot: 目标用户的状态快照。
         title: 已获授权的称呼文案。
+        incoming_text: 本轮原始文本，仅用于判断是否在问或哄她，不写入块内。
 
     Returns:
         str: 带边界标记的提示块。
@@ -168,27 +189,37 @@ def build_private_block(
 
     lines: List[str] = [
         BLOCK_START,
-        "以下只提示你的倾向，不代表对方心情，不报状态与分数。",
+        "只提示倾向，不代表对方心情，不报状态或分数。",
         f"关系：{AFFINITY_TEXT.get(affinity_key, '生疏')}。",
         f"此刻心情：{MOOD_TEXT.get(mood_key, '平稳')}。",
-        f"表达方式：{AFFINITY_GUIDANCE.get(affinity_key, AFFINITY_GUIDANCE['stranger'])}。",
+        f"表达：{AFFINITY_GUIDANCE.get(affinity_key, AFFINITY_GUIDANCE['stranger'])}。",
     ]
 
     reaction_text = REACTION_GUIDANCE.get(snapshot.reaction)
     if reaction_text:
         lines.append(f"当前反应：{reaction_text}。")
 
+    if snapshot.reaction == Reaction.SULK.value and incoming_is_care(incoming_text):
+        lines.append("对方在问或哄你：可先说「本鱼生气了，你不哄我我就不理你了」，再答正事，别重复同一句。")
+
+    if snapshot.reaction == Reaction.SOOTHED.value:
+        origin_text = _SOOTHED_ORIGIN_GUIDANCE.get(snapshot.reaction_origin)
+        if origin_text:
+            lines.append(f"和解：{origin_text}。")
+
     lines.append(f"情绪要求：{MOOD_GUIDANCE.get(mood_key, MOOD_GUIDANCE['calm'])}。")
 
-    if snapshot.title_allowed and snapshot.title_should_use:
+    if snapshot.reaction in (Reaction.HURT.value, Reaction.SULK.value):
+        lines.append("本轮不用专属称呼。")
+    elif snapshot.title_allowed and snapshot.title_should_use:
         lines.append(f"本轮可以用对方同意过的称呼「{sanitize_title(title)}」。")
     else:
-        lines.append("尚未获准的专属称呼不使用，普通关心不受此限制。")
+        lines.append("未获准的专属称呼不使用；自己按亲疏取的昵称和普通关心不受限制。")
 
     lines.extend(
         [
-            "先分清现实、假设与试演，追问沿用原语境；讨论或演出生气不等于真受伤，不倒推争执。肥鱼昵称不算攻击。",
-            "分享就参与，低落就关心，明确求办法再帮忙；独处与停止要尊重。状态不强加反应，事实与权限照常生效。",
+            "分清现实、假设与试演，追问沿用语境；讨论或演出生气不等于真受伤。肥鱼昵称不是攻击。",
+            "分享就参与，低落就关心，明确求办法再帮忙；独处与停止要尊重。事实与权限照常生效。",
             emoji_guidance(snapshot),
             BLOCK_END,
         ]

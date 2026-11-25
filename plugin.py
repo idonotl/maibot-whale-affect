@@ -49,6 +49,11 @@ _CAPTURE_WINDOW_SECONDS = 120
 # 单次补捉最多读取的消息条数。
 _CAPTURE_LIMIT = 50
 
+# 判定「群里是否只有一个人在跟她说话」的观察窗口（秒）。
+# 窗口内只有一个发言人时，回复对象是明确的，可以用他的关系档位；
+# 多人接连发言说明大家在抢话，退回只含全局心情的群体块。
+_GROUP_TARGET_WINDOW_SECONDS = 60
+
 
 def _engine_config_from(config: WhaleAffectConfig) -> EngineConfig:
     """把 SDK 配置对象转换成引擎的纯数值参数。
@@ -109,6 +114,7 @@ class WhaleAffectPlugin(MaiBotPlugin):
             "hook_errors": 0,
             "blocks_injected": 0,
             "replies_counted": 0,
+            "replies_held": 0,
             "semantic_submitted": 0,
             "semantic_resolved": 0,
         }
@@ -137,6 +143,17 @@ class WhaleAffectPlugin(MaiBotPlugin):
         text = str(kwargs.get('response') or '')
         if not session or not text or config is None or config.plugin.shadow_mode:
             return {'action': 'continue'}
+        try:
+            should_hold = await asyncio.wait_for(self._should_hold_reply(kwargs), timeout=_REPLYER_BUDGET_SECONDS)
+        except asyncio.TimeoutError:
+            should_hold = False
+        except Exception as exc:  # noqa: BLE001 - 降频失败必须放行
+            self._note_error("hold_upset_reply", exc)
+            should_hold = False
+        if should_hold:
+            self._stats["replies_held"] += 1
+            self._get_logger().info("whale-affect: 情绪尚未缓和，本轮暂缓回复")
+            return {'action': 'continue', 'modified_kwargs': {**kwargs, 'response': ''}}
         self._reply_echo.window_seconds = float(config.scoring.reply_echo_window_seconds)
         if self._reply_echo.repeats(session, text):
             target = await self._style_target_text(kwargs)
@@ -165,8 +182,12 @@ class WhaleAffectPlugin(MaiBotPlugin):
             return {'action': 'continue'}
         try:
             block = style_guard.prompt(self._get_style_rules(), await self._style_target_text(kwargs))
-            return {'action': 'continue', 'modified_kwargs': {**kwargs,
-                'extra_prompt': style_guard.merge(kwargs.get('extra_prompt') or '', block)}}
+            updated = dict(kwargs)
+            updated['extra_prompt'] = style_guard.merge(kwargs.get('extra_prompt') or '', block)
+            tool_args = kwargs.get('reply_tool_args')
+            if isinstance(tool_args, dict) and tool_args.get('reply_style') == '简短表达':
+                updated['reply_tool_args'] = {**tool_args, 'reply_style': '正常回复'}
+            return {'action': 'continue', 'modified_kwargs': updated}
         except Exception as exc:
             self._note_error('style_prompt', exc)
             return {'action': 'continue'}
@@ -369,6 +390,40 @@ class WhaleAffectPlugin(MaiBotPlugin):
         except Exception as exc:  # noqa: BLE001 - 计分失败不能阻断 Planner
             self._note_error("capture_accepted_messages", exc)
         return {"action": "continue"}
+
+    @HookHandler(
+        "maisaka.planner.before_request",
+        name="ground_planner_facts",
+        description="约束回复方向遵守原始消息的人称与事实，不从沉默推断状态。",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        timeout_ms=300,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def ground_planner_facts(self, **kwargs: Any) -> Dict[str, Any]:
+        config = self._active_config()
+        items = kwargs.get("items")
+        if config is None or config.plugin.shadow_mode or not isinstance(items, list) or kwargs.get("item_schema_version") != 1:
+            return {"action": "continue"}
+        try:
+            updated = dict(kwargs)
+            updated["items"] = [item for item in items if not (
+                isinstance(item, dict)
+                and str((item.get("meta") or {}).get("item_id", "")).startswith(style_guard.PLANNER_ITEM_PREFIX)
+            )]
+            updated["items"].append({
+                "item_type": "UserMessageItem",
+                "meta": {
+                    "item_id": style_guard.PLANNER_ITEM_PREFIX + uuid4().hex,
+                    "logical_turn_id": None,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+                "parts": [{"type": "text", "text": style_guard.planner_prompt()}],
+            })
+            return {"action": "continue", "modified_kwargs": updated}
+        except Exception as exc:
+            self._note_error("planner_grounding", exc)
+            return {"action": "continue"}
 
     # ──── Hook：Replyer 注入本次语气 ──────────────────────
 
@@ -605,8 +660,8 @@ class WhaleAffectPlugin(MaiBotPlugin):
     async def _resolve_target(self, session_id: str, reply_message_id: str) -> Optional[NormalizedMessage]:
         """解析本轮回复的真实目标用户。
 
-        明确引用必须精确匹配；解析失败不猜测群内最后发言者。
-        无引用的私聊只可使用本会话已接受消息的身份。
+        明确引用必须精确匹配；解析失败时私聊可用本会话已接受消息的身份，
+        群聊只在窗口内单人发言时把最后发言人当作明确对象，多人抢话则不猜测。
 
         Args:
             session_id: 会话 ID。
@@ -625,9 +680,39 @@ class WhaleAffectPlugin(MaiBotPlugin):
         last_id = self._session_speaker.get(session_id) if session_id else None
         if last_id:
             candidate = self._identities.get(last_id)
-            if candidate is not None and not candidate.is_group:
-                return candidate
+            if candidate is not None:
+                if not candidate.is_group:
+                    return candidate
+                speakers = self._group_speakers(session_id)
+                if len(speakers) == 1:
+                    return speakers[0]
         return None
+
+    def _group_speakers(self, session_id: str) -> List[NormalizedMessage]:
+        """返回观察窗口内本群里跟她说过的不同用户，最近发言的排在最前。
+
+        Args:
+            session_id: 群会话 ID。
+
+        Returns:
+            List[NormalizedMessage]: 去重后的发言人列表；无人发言时为空。
+        """
+
+        engine = self._engine
+        if engine is None or not session_id:
+            return []
+        now = engine.clock.now_utc()
+        speakers: List[NormalizedMessage] = []
+        seen: set = set()
+        for message in reversed(list(self._accepted_identities.values())):
+            if message.session_id != session_id or not 0 <= now - message.timestamp <= _GROUP_TARGET_WINDOW_SECONDS:
+                continue
+            key = message.identity_key().serialize()
+            if key in seen:
+                continue
+            seen.add(key)
+            speakers.append(message)
+        return speakers
 
     # ──── 计分：Planner 补捉路径 ──────────────────────────
 
@@ -874,19 +959,68 @@ class WhaleAffectPlugin(MaiBotPlugin):
         if snapshot is None:
             return None
 
-        # A private jealousy reaction must not be verbalized in a group reply.
-        if target.is_group and snapshot.reaction == "jealous":
-            snapshot = replace(snapshot, reaction="none")
-
-        # An explicitly targeted group reply has an individual relationship too.
-        # The engine still disallows private titles in group snapshots.
-        block = prompt_builder.build_private_block(snapshot, title=title or prompt_builder.DEFAULT_TITLE)
+        # 明确对象的群聊回复走这个人的关系档位；称呼能否在群里说出口仍由引擎的
+        # title_allow_in_groups 决定。
+        block = prompt_builder.build_private_block(
+            snapshot,
+            title=title or prompt_builder.DEFAULT_TITLE,
+            incoming_text=target.text,
+        )
 
         self._get_logger().debug(
             "whale-affect: 生成提示块 "
             f"user={target.user_id} {describe_snapshot(snapshot)} 长度={prompt_builder.block_char_length(block)}"
         )
         return block
+
+    async def _should_hold_reply(self, payload: Dict[str, Any]) -> bool:
+        """受伤/升级赌气时暂缓非必要的追加回复。
+
+        只在能确定回复对象时生效；群聊必须有明确引用，避免把整个群静音。
+        对方点名、提问或来哄时不拦截，让她能说出「本鱼生气了」再答正事。
+
+        Args:
+            payload: ``maisaka.reply.before_post_process`` 参数。
+
+        Returns:
+            bool: 本轮应暂缓发送时返回 ``True``。
+        """
+
+        config = self._active_config()
+        engine = self._engine
+        if engine is None or config is None or config.plugin.shadow_mode:
+            return False
+        if not config.reactions.hold_upset_replies:
+            return False
+
+        session_id = str(payload.get("session_id") or "").strip()
+        reference = str(payload.get("reply_message_id") or "").strip()
+        if not session_id:
+            return False
+
+        target = self._identities.get((session_id, reference)) if reference else None
+        if target is None:
+            target = await self._resolve_target(session_id, reference)
+        if target is None:
+            return False
+        if target.is_group and not reference:
+            return False
+        if target.is_at or target.is_mentioned:
+            return False
+        if prompt_builder.incoming_is_care(target.text):
+            return False
+        return await asyncio.to_thread(self._hold_for_target, target)
+
+    def _hold_for_target(self, target: NormalizedMessage) -> bool:
+        """同步读取情绪并决定是否暂缓（由工作线程调用）。"""
+
+        engine = self._engine
+        if engine is None:
+            return False
+        return engine.should_hold_upset_reply(
+            target.identity_key().serialize(),
+            engine.clock.now_utc(),
+        )
 
     def _snapshot_for(self, target: NormalizedMessage) -> Tuple[Optional[Snapshot], str]:
         """读取目标用户的快照与已授权称呼（同步，由工作线程调用）。
@@ -907,6 +1041,10 @@ class WhaleAffectPlugin(MaiBotPlugin):
         bot_key = host_adapter.build_bot_key_from_message(target)
         scene = "group" if target.is_group else "private"
         snapshot = engine.build_snapshot(user_key, bot_key, scene, now)
+        config = self._try_config()
+        owner_user_id = str(config.affinity.title_owner_user_id).strip() if config is not None else ""
+        if target.user_id != owner_user_id:
+            snapshot = replace(snapshot, title_allowed=False, title_should_use=False)
         user = storage.load_user(user_key, engine.config)
         return snapshot, str(user.preferred_title or "")
 
@@ -955,7 +1093,7 @@ class WhaleAffectPlugin(MaiBotPlugin):
         if target is None:
             return
 
-        counted = await asyncio.to_thread(self._record_delivery, target, session_id, outbound_id, text)
+        counted = await asyncio.to_thread(self._record_delivery, target, session_id, outbound_id, text, reference)
         if counted:
             self._stats["replies_counted"] += 1
             self._engagement[(session_id, target.identity_key().serialize())] = self._engine.clock.now_utc()
@@ -964,7 +1102,14 @@ class WhaleAffectPlugin(MaiBotPlugin):
                 while len(cache) > _MAX_IDENTITY_CACHE:
                     cache.popitem(last=False)
 
-    def _record_delivery(self, target: NormalizedMessage, session_id: str, message_id: str, text: str) -> bool:
+    def _record_delivery(
+        self,
+        target: NormalizedMessage,
+        session_id: str,
+        message_id: str,
+        text: str,
+        reference: str = "",
+    ) -> bool:
         """Atomically deduplicate a successful send and consume an actually used title."""
         repository, engine, storage = self._repository, self._engine, self._storage
         if repository is None or engine is None or storage is None:
@@ -972,6 +1117,7 @@ class WhaleAffectPlugin(MaiBotPlugin):
         now = engine.clock.now_utc()
         user_key = target.identity_key().serialize()
         bot_key = host_adapter.build_bot_key_from_message(target)
+        turn_token = reference or f"{session_id}|{now // 8}"
         def record(connection):
             receipt = repository.delivery_key(bot_key, session_id, message_id)
             cursor = connection.execute("INSERT OR IGNORE INTO successful_sends (receipt_key,user_key,sent_utc) VALUES (?,?,?)", (receipt, user_key, now))
@@ -980,7 +1126,7 @@ class WhaleAffectPlugin(MaiBotPlugin):
             snapshot = engine.build_snapshot(user_key, bot_key, "group" if target.is_group else "private", now)
             user = storage.load_user(user_key, engine.config)
             used_title = snapshot.title_allowed and bool(user.preferred_title) and user.preferred_title in text
-            engine.record_successful_reply(user_key, bot_key, now)
+            engine.record_turn_delivery(user_key, bot_key, session_id, turn_token, now)
             if used_title:
                 engine.mark_title_used(user_key, bot_key, now)
             return True

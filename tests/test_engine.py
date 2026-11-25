@@ -156,11 +156,11 @@ class EngineTestCase(unittest.TestCase):
         self.assertEqual(low.snapshot.reaction,Reaction.NONE.value)
         self.assertEqual(low.delta_offset_centi,0)
 
-    def test_jealousy_never_exposes_group_and_comfort_recovers(self) -> None:
+    def test_jealousy_triggers_in_group_and_comfort_recovers(self) -> None:
         self.storage.save_user(UserRelationState(user_key=USER_KEY,affinity_centi=5000))
         group=self.engine.apply(self.make_event(EventCategory.JEALOUSY_CANDIDATE.value,is_group=True,
                                   message_id=self.jealousy_id(prefix="group")),BASE_NOW)
-        self.assertEqual(group.snapshot.reaction,Reaction.NONE.value)
+        self.assertEqual(group.snapshot.reaction,Reaction.JEALOUS.value)
         moment=self.engine.apply(self.make_event(EventCategory.JEALOUSY_CANDIDATE.value,now=BASE_NOW+1,
                                    message_id=self.jealousy_id(prefix="private")),BASE_NOW+1)
         self.assertEqual(moment.snapshot.reaction,Reaction.JEALOUS.value)
@@ -346,8 +346,8 @@ class EngineTestCase(unittest.TestCase):
             self.engine_config.valid_chat_gain_centi,
         )
 
-    def test_affectionate_tease_pouts_only_sometimes_for_close_users(self) -> None:
-        """关系够近时昵称调侃偶尔升级为短暂赌气，不扣分、会自愈。"""
+    def test_affectionate_tease_pouts_then_escalates_only_after_a_while(self) -> None:
+        """关系够近时昵称调侃偶尔赌气；冷却期内不重复，过一会儿再逗才升级。"""
 
         self.storage.save_user(UserRelationState(user_key=USER_KEY, affinity_centi=7000))
         selected = self.jealousy_id(0.0, 0.12, prefix="pout")
@@ -361,27 +361,106 @@ class EngineTestCase(unittest.TestCase):
             first.snapshot.reaction_expires_utc, BASE_NOW + self.engine_config.pout_ttl_seconds
         )
 
-        # 冷却期内再调侃不重复赌气。
-        second = self.engine.apply(
+        # 投影到 8 小时后应自愈，不需要用户反复哄。
+        self.assertEqual(
+            self.snapshot(now=BASE_NOW + self.engine_config.pout_ttl_seconds + 1).reaction,
+            Reaction.NONE.value,
+        )
+
+        # 30 秒内再逗一次只保持赌气，不升级。
+        early = self.engine.apply(
             self.make_event(
                 EventCategory.AFFECTIONATE_TEASE.value,
-                now=BASE_NOW + 60,
+                now=BASE_NOW + 30,
+                message_id=self.jealousy_id(0.0, 0.12, prefix="early"),
+            ),
+            BASE_NOW + 30,
+        )
+        self.assertIn("pout_not_selected", early.suppressed)
+        self.assertEqual(early.snapshot.reaction, Reaction.POUT.value)
+
+        # 超过 60 秒还继续逗，才升级成 sulk。
+        later = self.engine.apply(
+            self.make_event(
+                EventCategory.AFFECTIONATE_TEASE.value,
+                now=BASE_NOW + 61,
                 message_id=self.jealousy_id(0.0, 0.12, prefix="again"),
             ),
-            BASE_NOW + 60,
+            BASE_NOW + 61,
         )
-        self.assertIn("pout_not_selected", second.suppressed)
+        self.assertIn("pout_not_selected", later.suppressed)
+        self.assertEqual(later.snapshot.reaction, Reaction.SULK.value)
+        self.assertEqual(
+            later.snapshot.reaction_expires_utc, BASE_NOW + 61 + self.engine_config.sulk_ttl_seconds
+        )
 
-        # 到期后自愈，不需要用户反复哄。
-        expired = self.engine.apply(
+    def test_jealousy_repeat_escalates_to_sulk(self) -> None:
+        """同一段吃醋被第二次戳到，升级为 sulk。"""
+
+        self.storage.save_user(UserRelationState(user_key=USER_KEY, affinity_centi=5000))
+        first = self.engine.apply(
             self.make_event(
-                EventCategory.FRIENDLY_CHAT.value,
-                now=BASE_NOW + self.engine_config.pout_ttl_seconds + 1,
-                message_id=self.jealousy_id(0.0, 0.12, prefix="later"),
+                EventCategory.JEALOUSY_CANDIDATE.value,
+                message_id=self.jealousy_id(prefix="first"),
             ),
-            BASE_NOW + self.engine_config.pout_ttl_seconds + 1,
+            BASE_NOW,
         )
-        self.assertEqual(expired.snapshot.reaction, Reaction.NONE.value)
+        self.assertEqual(first.snapshot.reaction, Reaction.JEALOUS.value)
+
+        later = BASE_NOW + 1801
+        second = self.engine.apply(
+            self.make_event(
+                EventCategory.JEALOUSY_CANDIDATE.value,
+                now=later,
+                message_id=self.jealousy_id(prefix="second"),
+            ),
+            later,
+        )
+        self.assertEqual(second.snapshot.reaction, Reaction.SULK.value)
+        self.assertEqual(
+            second.snapshot.reaction_expires_utc, later + self.engine_config.sulk_ttl_seconds
+        )
+
+    def test_jealousy_during_pout_escalates_to_sulk(self) -> None:
+        """赌气中又被吃醋戳到，直接升级为 sulk。"""
+
+        self.storage.save_user(UserRelationState(user_key=USER_KEY, affinity_centi=7000))
+        first = self.engine.apply(
+            self.make_event(
+                EventCategory.AFFECTIONATE_TEASE.value,
+                message_id=self.jealousy_id(0.0, 0.12, prefix="pout"),
+            ),
+            BASE_NOW,
+        )
+        self.assertEqual(first.snapshot.reaction, Reaction.POUT.value)
+
+        second = self.engine.apply(
+            self.make_event(
+                EventCategory.JEALOUSY_CANDIDATE.value,
+                now=BASE_NOW + 1,
+                message_id=self.jealousy_id(0.0, 0.40, prefix="jealous"),
+            ),
+            BASE_NOW + 1,
+        )
+        self.assertEqual(second.snapshot.reaction, Reaction.SULK.value)
+
+    def test_repeated_attack_does_not_refresh_hurt(self) -> None:
+        """连续攻击不刷新受伤时长与回复额度。"""
+
+        first = self.engine.apply(self.make_event(EventCategory.SEVERE_ATTACK.value), BASE_NOW)
+        self.assertEqual(first.snapshot.reaction, Reaction.HURT.value)
+        expected_expiry = first.snapshot.reaction_expires_utc
+
+        second = self.engine.apply(
+            self.make_event(EventCategory.SEVERE_ATTACK.value, now=BASE_NOW + 100),
+            BASE_NOW + 100,
+        )
+        self.assertEqual(second.snapshot.reaction, Reaction.HURT.value)
+        self.assertEqual(second.snapshot.reaction_expires_utc, expected_expiry)
+        self.assertEqual(
+            second.snapshot.reaction_expires_utc,
+            BASE_NOW + self.engine_config.hurt_ttl_seconds,
+        )
 
     def test_affectionate_tease_pout_never_shows_for_stranger_or_group(self) -> None:
         """生人与群聊只调侃不赌气；受伤状态也不被昵称覆盖。"""
@@ -411,6 +490,71 @@ class EngineTestCase(unittest.TestCase):
             BASE_NOW + 30,
         )
         self.assertEqual(result.snapshot.reaction, Reaction.SOOTHED.value)
+        self.assertEqual(result.snapshot.reaction_origin, Reaction.HURT.value)
+
+    def test_soothed_remembers_jealousy_origin_and_ignores_new_tease(self) -> None:
+        """被哄好时保留来源，用于区别收尾话术；新逗弄不覆盖缓和。"""
+
+        self.storage.save_user(UserRelationState(user_key=USER_KEY, affinity_centi=5000))
+        self.engine.apply(
+            self.make_event(
+                EventCategory.JEALOUSY_CANDIDATE.value,
+                message_id=self.jealousy_id(prefix="origin"),
+            ),
+            BASE_NOW,
+        )
+        result = self.engine.apply(
+            self.make_event(EventCategory.COMFORT.value, now=BASE_NOW + 10),
+            BASE_NOW + 10,
+        )
+        self.assertEqual(result.snapshot.reaction, Reaction.SOOTHED.value)
+        self.assertEqual(result.snapshot.reaction_origin, Reaction.JEALOUS.value)
+
+        kept = self.engine.apply(
+            self.make_event(
+                EventCategory.AFFECTIONATE_TEASE.value,
+                now=BASE_NOW + 11,
+                message_id=self.jealousy_id(0.0, 0.12, prefix="tease"),
+            ),
+            BASE_NOW + 11,
+        )
+        self.assertEqual(kept.snapshot.reaction, Reaction.SOOTHED.value)
+
+    def test_upset_hold_allows_first_reply_then_spaces_out(self) -> None:
+        """受伤时第一条回复放行，之后按间隔暂缓并受略过上限约束。"""
+
+        self.engine.apply(self.make_event(EventCategory.MILD_ATTACK.value), BASE_NOW)
+        self.assertFalse(self.engine.should_hold_upset_reply(USER_KEY, BASE_NOW + 1))
+
+        self.engine.record_turn_delivery(USER_KEY, BOT_KEY, "session", "m1", BASE_NOW + 1)
+        self.assertTrue(self.engine.should_hold_upset_reply(USER_KEY, BASE_NOW + 2))
+        self.assertFalse(self.engine.should_hold_upset_reply(USER_KEY, BASE_NOW + 3))
+        self.assertFalse(
+            self.engine.should_hold_upset_reply(
+                USER_KEY,
+                BASE_NOW + 1 + self.engine_config.hurt_min_reply_interval_seconds,
+            )
+        )
+
+    def test_one_turn_consumes_reaction_quota_once(self) -> None:
+        """同一条入站消息拆成多条气泡时，只消耗一次反应轮次。"""
+
+        self.engine.apply(self.make_event(EventCategory.MILD_ATTACK.value), BASE_NOW)
+        self.assertEqual(
+            self.storage.load_user(USER_KEY, self.engine_config).reaction_replies_left,
+            self.engine_config.hurt_max_replies,
+        )
+        self.engine.record_turn_delivery(USER_KEY, BOT_KEY, "session", "m1", BASE_NOW + 1)
+        self.engine.record_turn_delivery(USER_KEY, BOT_KEY, "session", "m1", BASE_NOW + 2)
+        self.assertEqual(
+            self.storage.load_user(USER_KEY, self.engine_config).reaction_replies_left,
+            self.engine_config.hurt_max_replies - 1,
+        )
+        self.engine.record_turn_delivery(USER_KEY, BOT_KEY, "session", "m2", BASE_NOW + 3)
+        self.assertEqual(
+            self.storage.load_user(USER_KEY, self.engine_config).reaction_replies_left,
+            self.engine_config.hurt_max_replies - 2,
+        )
 
     def test_nickname_cannot_override_hurt(self) -> None:
         """再喊昵称不能覆盖真实受伤。"""
@@ -536,6 +680,32 @@ class EngineTestCase(unittest.TestCase):
         allowed, should_use = self.engine.compute_title_state(hurt, 7000, False)
         self.assertFalse(should_use)
 
+        sulk = UserRelationState(
+            user_key=USER_KEY,
+            affinity_centi=9000,
+            active_days=cfg.title_required_active_days,
+            valid_interactions=cfg.title_required_interactions,
+            preferred_title="主人",
+            title_opt_in=True,
+            successful_reply_count=10,
+            reaction=Reaction.SULK.value,
+            reaction_expires_utc=BASE_NOW + 600,
+        )
+        allowed, should_use = self.engine.compute_title_state(sulk, 7000, False)
+        self.assertFalse(should_use)
+
+    def test_new_reaction_defaults_match_product_plan(self) -> None:
+        """情绪时长与轮次符合已确认的产品参数。"""
+
+        cfg = self.engine_config
+        self.assertEqual((cfg.pout_ttl_seconds, cfg.pout_max_replies), (28800, 10))
+        self.assertEqual((cfg.jealous_ttl_seconds, cfg.jealous_max_replies), (43200, 10))
+        self.assertEqual((cfg.sulk_ttl_seconds, cfg.sulk_max_replies), (2700, 4))
+        self.assertEqual((cfg.hurt_ttl_seconds, cfg.hurt_max_replies), (28800, 8))
+        self.assertEqual((cfg.soothed_ttl_seconds, cfg.soothed_max_replies), (600, 1))
+        self.assertEqual(cfg.sulk_repeat_threshold, 2)
+        self.assertTrue(cfg.hold_upset_replies)
+
     def test_t27_title_hysteresis(self) -> None:
         """F 跌破 80 停用，回升到 85 才重新启用。"""
 
@@ -566,7 +736,7 @@ class EngineTestCase(unittest.TestCase):
         self.assertTrue(allowed)
 
     def test_title_respects_reply_interval(self) -> None:
-        """每 N 次回复最多使用一次称呼。"""
+        """称呼之间有回复数间隔，间隔会随心情与关系缩短。"""
 
         cfg = self.engine_config
         state = UserRelationState(
@@ -585,6 +755,31 @@ class EngineTestCase(unittest.TestCase):
         state.successful_reply_count = 10 + cfg.title_min_reply_interval
         _, should_use = self.engine.compute_title_state(state, 7000, False)
         self.assertTrue(should_use)
+
+    def test_title_interval_shrinks_with_mood(self) -> None:
+        """同样的人数间隔，心情越好越容易主动叫出称呼。"""
+
+        cfg = self.engine_config
+
+        def state(count: int) -> UserRelationState:
+            return UserRelationState(
+                user_key=USER_KEY,
+                affinity_centi=9000,
+                active_days=cfg.title_required_active_days,
+                valid_interactions=cfg.title_required_interactions,
+                preferred_title="主人",
+                title_opt_in=True,
+                successful_reply_count=count,
+                last_title_reply_count=0,
+            )
+
+        calm_gap = max(1, cfg.title_min_reply_interval - 2)  # intimate + 平稳
+        _, too_early = self.engine.compute_title_state(state(calm_gap - 1), 5000, False)
+        self.assertFalse(too_early)
+        _, on_time = self.engine.compute_title_state(state(calm_gap), 5000, False)
+        self.assertTrue(on_time)
+        _, delighted = self.engine.compute_title_state(state(calm_gap - 1), 9000, False)
+        self.assertTrue(delighted, "很开心时应该比平稳时更早愿意叫")
 
     # ──── 并发与事务 ─────────────────────────────────────
 

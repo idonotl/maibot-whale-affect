@@ -28,7 +28,7 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "影子模式", "order": 1},
     )
     config_version: str = Field(
-        default="0.2.0",
+        default="0.3.0",
         description="配置结构版本，缺少或被清空时插件拒绝启用",
         json_schema_extra={"label": "配置版本", "order": 2, "disabled": True},
     )
@@ -192,44 +192,114 @@ class AffinitySectionConfig(PluginConfigBase):
         description="每 N 次普通回复最多使用一次称呼",
         json_schema_extra={"label": "称呼最小回复间隔", "order": 15, "step": 1},
     )
+    title_owner_user_id: str = Field(
+        default="100000001",
+        description="唯一可以使用「主人」称呼的用户 QQ 号；其他账号只能使用自取昵称",
+        json_schema_extra={"label": "唯一主人用户 QQ", "order": 16},
+    )
 
 
 class ReactionsSectionConfig(PluginConfigBase):
-    """临时反应 pout / soothed / hurt 的存活时间。"""
+    """临时反应的持续时间、回复额度与生气时的定向降频。"""
 
     __ui_label__ = "临时反应"
     __ui_icon__ = "zap"
     __ui_order__ = 3
 
     pout_ttl_seconds: int = Field(
-        default=180,
+        default=28800,
         gt=0,
-        description="赌气（pout）最长持续时间",
-        json_schema_extra={"label": "赌气时长", "order": 0, "step": 30},
-    )
-    soothed_ttl_seconds: int = Field(
-        default=180,
-        gt=0,
-        description="被哄好（soothed）最长持续时间",
-        json_schema_extra={"label": "缓和时长", "order": 1, "step": 30},
-    )
-    hurt_ttl_seconds: int = Field(
-        default=1800,
-        gt=0,
-        description="受伤（hurt）最长持续时间",
-        json_schema_extra={"label": "受伤时长", "order": 2, "step": 60},
+        description="赌气（pout）最长持续时间，8 小时内没有耗尽回复次数就自然消退",
+        json_schema_extra={"label": "赌气时长", "order": 0, "step": 300},
     )
     pout_max_replies: int = Field(
-        default=2,
+        default=10,
         ge=1,
-        description="赌气最多消耗的回复次数（与时间先到为准）",
-        json_schema_extra={"label": "赌气回复次数", "order": 3, "step": 1},
+        description="赌气期间最多回复的轮次（与时间先到为准）",
+        json_schema_extra={"label": "赌气回复轮次", "order": 1, "step": 1},
+    )
+    jealous_ttl_seconds: int = Field(
+        default=43200,
+        gt=0,
+        description="吃醋（jealous）最长持续时间，12 小时内没有耗尽回复次数就自然消退",
+        json_schema_extra={"label": "吃醋时长", "order": 2, "step": 300},
+    )
+    jealous_max_replies: int = Field(
+        default=10,
+        ge=1,
+        description="吃醋期间最多回复的轮次（与时间先到为准）",
+        json_schema_extra={"label": "吃醋回复轮次", "order": 3, "step": 1},
+    )
+    sulk_ttl_seconds: int = Field(
+        default=2700,
+        gt=0,
+        description="升级赌气（sulk）最长持续时间",
+        json_schema_extra={"label": "升级赌气时长", "order": 4, "step": 60},
+    )
+    sulk_max_replies: int = Field(
+        default=4,
+        ge=1,
+        description="升级赌气期间最多回复的轮次",
+        json_schema_extra={"label": "升级赌气回复轮次", "order": 5, "step": 1},
+    )
+    sulk_max_ignored: int = Field(
+        default=3,
+        ge=0,
+        description="升级赌气时最多暂时不回几条；达到后主动给台阶",
+        json_schema_extra={"label": "升级赌气最多略过", "order": 6, "step": 1},
+    )
+    sulk_min_reply_interval_seconds: int = Field(
+        default=600,
+        ge=0,
+        description="升级赌气时相邻两次回复的最小间隔（首条不受限）",
+        json_schema_extra={"label": "升级赌气回复间隔", "order": 7, "step": 30},
+    )
+    sulk_repeat_threshold: int = Field(
+        default=2,
+        ge=2,
+        description="同一轮不满累计多少次后升级为 sulk（至少 2）",
+        json_schema_extra={"label": "升级赌气触发次数", "order": 8, "step": 1},
+    )
+    hurt_ttl_seconds: int = Field(
+        default=28800,
+        gt=0,
+        description="受伤（hurt）最长持续时间",
+        json_schema_extra={"label": "受伤时长", "order": 9, "step": 300},
+    )
+    hurt_max_replies: int = Field(
+        default=8,
+        ge=1,
+        description="受伤期间最多回复的轮次",
+        json_schema_extra={"label": "受伤回复轮次", "order": 10, "step": 1},
+    )
+    hurt_max_ignored: int = Field(
+        default=1,
+        ge=0,
+        description="受伤时最多暂时不回几条；达到后仍会回应",
+        json_schema_extra={"label": "受伤最多略过", "order": 11, "step": 1},
+    )
+    hurt_min_reply_interval_seconds: int = Field(
+        default=900,
+        ge=0,
+        description="受伤时相邻两次回复的最小间隔（首条不受限）",
+        json_schema_extra={"label": "受伤回复间隔", "order": 12, "step": 30},
+    )
+    soothed_ttl_seconds: int = Field(
+        default=600,
+        gt=0,
+        description="被哄好（soothed）最长持续时间",
+        json_schema_extra={"label": "缓和时长", "order": 13, "step": 30},
     )
     soothed_max_replies: int = Field(
         default=1,
         ge=1,
-        description="缓和最多消耗的回复次数（与时间先到为准）",
-        json_schema_extra={"label": "缓和回复次数", "order": 4, "step": 1},
+        description="缓和状态最多回复的轮次",
+        json_schema_extra={"label": "缓和回复轮次", "order": 14, "step": 1},
+    )
+    hold_upset_replies: bool = Field(
+        default=True,
+        description="生气或受伤时，若刚回复过且对方没有提问/哄她，暂时少接一轮",
+        json_schema_extra={"label": "生气时定向降频", "order": 15},
     )
 
 
@@ -438,6 +508,20 @@ def validate_config_sections(config: WhaleAffectConfig) -> List[str]:
         problems.append("affinity.active_day_required_interactions 至少为 2，否则活跃日无意义")
     if config.affinity.active_day_min_span_seconds < config.affinity.valid_chat_interval_seconds:
         problems.append("affinity.active_day_min_span_seconds 不应小于 valid_chat_interval_seconds")
+    if not str(config.affinity.title_owner_user_id).strip().isdigit():
+        problems.append("affinity.title_owner_user_id 必须是唯一主人用户的数字 QQ 号")
+
+    reactions = config.reactions
+    if reactions.sulk_repeat_threshold < 2:
+        problems.append("reactions.sulk_repeat_threshold 至少为 2，否则首次不满就会进入 sulk")
+    if reactions.sulk_min_reply_interval_seconds > reactions.sulk_ttl_seconds:
+        problems.append("reactions.sulk_min_reply_interval_seconds 不应大于 sulk_ttl_seconds")
+    if reactions.hurt_min_reply_interval_seconds > reactions.hurt_ttl_seconds:
+        problems.append("reactions.hurt_min_reply_interval_seconds 不应大于 hurt_ttl_seconds")
+    if reactions.sulk_max_ignored >= reactions.sulk_max_replies:
+        problems.append("reactions.sulk_max_ignored 应小于 sulk_max_replies，否则可能一直略过回复")
+    if reactions.hurt_max_ignored >= reactions.hurt_max_replies:
+        problems.append("reactions.hurt_max_ignored 应小于 hurt_max_replies，否则可能一直略过回复")
 
     normalized_admin_ids = [str(item).strip() for item in config.admin.user_ids if str(item).strip()]
     if len(normalized_admin_ids) != len(config.admin.user_ids):

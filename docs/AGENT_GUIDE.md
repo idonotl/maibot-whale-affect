@@ -34,6 +34,7 @@ QQ 收发由外部适配器承担。需要 QQ 的功能必须配置适配器并�
 - `HookHandler`：`maisaka.replyer.after_response`（plugin.py）
 - `HookHandler`：`chat.receive.after_process`（plugin.py）
 - `HookHandler`：`maisaka.planner.before_request`（plugin.py）
+- `HookHandler`：`maisaka.planner.before_request`（plugin.py）
 - `HookHandler`：`maisaka.replyer.before_request`（plugin.py）
 - `HookHandler`：`send_service.after_send`（plugin.py）
 - `HookHandler`：`maisaka.planner.before_request`（plugin.py）

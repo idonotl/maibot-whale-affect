@@ -6,7 +6,7 @@
 |---|---|---|---|
 | PluginSectionConfig.enabled | `bool` | `False` | 是否启用插件（关闭后完全恢复原回复逻辑） |
 | PluginSectionConfig.shadow_mode | `bool` | `True` | 影子模式：只计算并记录状态，不向回复注入任何提示块 |
-| PluginSectionConfig.config_version | `str` | `'0.2.0'` | 配置结构版本，缺少或被清空时插件拒绝启用 |
+| PluginSectionConfig.config_version | `str` | `'0.3.0'` | 配置结构版本，缺少或被清空时插件拒绝启用 |
 | MoodSectionConfig.timezone | `str` | `'Asia/Shanghai'` | 本地日期所用时区；修改后建议停用插件再迁移 |
 | MoodSectionConfig.daily_initial | `int` | `60` | 每日基础心情初值（0-100） |
 | MoodSectionConfig.global_recovery_half_life_hours | `float` | `4.0` | 基础心情向初值自然恢复的半衰期（小时） |
@@ -31,11 +31,23 @@
 | AffinitySectionConfig.title_requires_opt_in | `bool` | `True` | 是否必须由用户明确同意才可使用称呼 |
 | AffinitySectionConfig.title_allow_in_groups | `bool` | `False` | 是否允许在群聊使用亲昵称呼 |
 | AffinitySectionConfig.title_min_reply_interval | `int` | `5` | 每 N 次普通回复最多使用一次称呼 |
-| ReactionsSectionConfig.pout_ttl_seconds | `int` | `180` | 赌气（pout）最长持续时间 |
-| ReactionsSectionConfig.soothed_ttl_seconds | `int` | `180` | 被哄好（soothed）最长持续时间 |
-| ReactionsSectionConfig.hurt_ttl_seconds | `int` | `1800` | 受伤（hurt）最长持续时间 |
-| ReactionsSectionConfig.pout_max_replies | `int` | `2` | 赌气最多消耗的回复次数（与时间先到为准） |
-| ReactionsSectionConfig.soothed_max_replies | `int` | `1` | 缓和最多消耗的回复次数（与时间先到为准） |
+| AffinitySectionConfig.title_owner_user_id | `str` | `'100000001'` | 唯一可以使用「主人」称呼的用户 QQ 号；其他账号只能使用自取昵称 |
+| ReactionsSectionConfig.pout_ttl_seconds | `int` | `28800` | 赌气（pout）最长持续时间，8 小时内没有耗尽回复次数就自然消退 |
+| ReactionsSectionConfig.pout_max_replies | `int` | `10` | 赌气期间最多回复的轮次（与时间先到为准） |
+| ReactionsSectionConfig.jealous_ttl_seconds | `int` | `43200` | 吃醋（jealous）最长持续时间，12 小时内没有耗尽回复次数就自然消退 |
+| ReactionsSectionConfig.jealous_max_replies | `int` | `10` | 吃醋期间最多回复的轮次（与时间先到为准） |
+| ReactionsSectionConfig.sulk_ttl_seconds | `int` | `2700` | 升级赌气（sulk）最长持续时间 |
+| ReactionsSectionConfig.sulk_max_replies | `int` | `4` | 升级赌气期间最多回复的轮次 |
+| ReactionsSectionConfig.sulk_max_ignored | `int` | `3` | 升级赌气时最多暂时不回几条；达到后主动给台阶 |
+| ReactionsSectionConfig.sulk_min_reply_interval_seconds | `int` | `600` | 升级赌气时相邻两次回复的最小间隔（首条不受限） |
+| ReactionsSectionConfig.sulk_repeat_threshold | `int` | `2` | 同一轮不满累计多少次后升级为 sulk（至少 2） |
+| ReactionsSectionConfig.hurt_ttl_seconds | `int` | `28800` | 受伤（hurt）最长持续时间 |
+| ReactionsSectionConfig.hurt_max_replies | `int` | `8` | 受伤期间最多回复的轮次 |
+| ReactionsSectionConfig.hurt_max_ignored | `int` | `1` | 受伤时最多暂时不回几条；达到后仍会回应 |
+| ReactionsSectionConfig.hurt_min_reply_interval_seconds | `int` | `900` | 受伤时相邻两次回复的最小间隔（首条不受限） |
+| ReactionsSectionConfig.soothed_ttl_seconds | `int` | `600` | 被哄好（soothed）最长持续时间 |
+| ReactionsSectionConfig.soothed_max_replies | `int` | `1` | 缓和状态最多回复的轮次 |
+| ReactionsSectionConfig.hold_upset_replies | `bool` | `True` | 生气或受伤时，若刚回复过且对方没有提问/哄她，暂时少接一轮 |
 | ScoringSectionConfig.duplicate_text_window_seconds | `int` | `600` | 同一用户相同文本的去重窗口 |
 | ScoringSectionConfig.positive_semantic_cooldown_seconds | `int` | `600` | 正向语义奖励同类冷却时间 |
 | ScoringSectionConfig.positive_semantic_daily_count_cap | `int` | `3` | 每用户每日正向语义奖励次数上限 |

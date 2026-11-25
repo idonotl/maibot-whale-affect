@@ -1,7 +1,7 @@
 [plugin]
 enabled = false
 shadow_mode = true
-config_version = "0.2.0"
+config_version = "0.3.0"
 
 [mood]
 timezone = "Asia/Shanghai"
@@ -30,13 +30,25 @@ title_required_interactions = 40
 title_requires_opt_in = true
 title_allow_in_groups = false
 title_min_reply_interval = 5
+title_owner_user_id = "100000001"
 
 [reactions]
-pout_ttl_seconds = 180
-soothed_ttl_seconds = 180
-hurt_ttl_seconds = 1800
-pout_max_replies = 2
+pout_ttl_seconds = 28800
+pout_max_replies = 10
+jealous_ttl_seconds = 43200
+jealous_max_replies = 10
+sulk_ttl_seconds = 2700
+sulk_max_replies = 4
+sulk_max_ignored = 3
+sulk_min_reply_interval_seconds = 600
+sulk_repeat_threshold = 2
+hurt_ttl_seconds = 28800
+hurt_max_replies = 8
+hurt_max_ignored = 1
+hurt_min_reply_interval_seconds = 900
+soothed_ttl_seconds = 600
 soothed_max_replies = 1
+hold_upset_replies = true
 
 [scoring]
 duplicate_text_window_seconds = 600

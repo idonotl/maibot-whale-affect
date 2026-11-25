@@ -47,6 +47,18 @@ class StyleRulesTest(unittest.TestCase):
         self.assertIn('MEMORY\nOPINION', merged)
         self.assertEqual(merged.count(style_guard.START), 1)
 
+    def test_clarity_and_fact_boundaries_cover_both_generation_stages(self):
+        replyer = style_guard.prompt(self.rules)
+        self.assertIn('不删理解句意必需的主语', replyer)
+        self.assertIn('Planner 的回复方向只是参考', replyer)
+        self.assertIn('长时间没有消息只说明没有新消息', replyer)
+        self.assertIn('假设和试演不等于真实发生', replyer)
+
+        planner = style_guard.planner_prompt()
+        self.assertIn('reply_reference 只写有据可依的回应方向', planner)
+        self.assertIn('刚睡醒、关机、离开、重新上线或恢复', planner)
+        self.assertIn('用户原话里的“我”属于用户', planner)
+
 
 class StyleHookTest(PluginTestCase):
     async def test_retry_once_then_passes_response_unchanged(self):
@@ -117,6 +129,72 @@ class StyleHookTest(PluginTestCase):
         text = result['modified_kwargs']['extra_prompt']
         self.assertIn('TONE\nMEMORY\nOPINION', text)
         self.assertIn(style_guard.START, text)
+
+    async def test_short_reply_style_is_neutralized_without_losing_tool_arguments(self):
+        p = await self.load()
+        p._style_target_text = AsyncMock(return_value='hello')
+        original = {
+            'reply_style': '简短表达',
+            'reply_reference': '对方只是打招呼；不要从隔夜沉默推断刚睡醒。',
+            'other_argument': 'keep',
+        }
+        result = await p.inject_style_rules(
+            extra_prompt='MEMORY', reply_tool_args=original, session_id=SESSION_ID,
+            reply_message_id='hello', unrelated_kwarg='preserved',
+        )
+        updated = result['modified_kwargs']
+        self.assertEqual(updated['reply_tool_args']['reply_style'], '正常回复')
+        self.assertEqual(updated['reply_tool_args']['reply_reference'], original['reply_reference'])
+        self.assertEqual(updated['reply_tool_args']['other_argument'], 'keep')
+        self.assertEqual(updated['unrelated_kwarg'], 'preserved')
+        self.assertEqual(original['reply_style'], '简短表达')
+        self.assertIn('不删理解句意必需的主语', updated['extra_prompt'])
+
+    async def test_other_reply_styles_are_not_rewritten(self):
+        p = await self.load()
+        p._style_target_text = AsyncMock(return_value='你好')
+        for style in ('正常回复', '长回复'):
+            with self.subTest(style=style):
+                args = {'reply_style': style, 'reply_reference': '保留'}
+                result = await p.inject_style_rules(extra_prompt='', reply_tool_args=args)
+                self.assertEqual(result['modified_kwargs']['reply_tool_args'], args)
+
+    async def test_style_prompt_retry_replaces_previous_block(self):
+        p = await self.load()
+        p._style_target_text = AsyncMock(return_value='你好')
+        first = await p.inject_style_rules(extra_prompt='MEMORY')
+        second = await p.inject_style_rules(extra_prompt=first['modified_kwargs']['extra_prompt'])
+        text = second['modified_kwargs']['extra_prompt']
+        self.assertEqual(text.count(style_guard.START), 1)
+        self.assertEqual(text.count(style_guard.FACT_BOUNDARIES[0]), 1)
+        self.assertIn('MEMORY', text)
+
+    async def test_planner_grounding_is_idempotent_and_preserves_other_items(self):
+        p = await self.load()
+        host_item = {
+            'item_type': 'UserMessageItem',
+            'meta': {'item_id': 'host-message'},
+            'parts': [{'type': 'text', 'text': 'hello'}],
+        }
+        first = await p.ground_planner_facts(items=[host_item], item_schema_version=1)
+        first_items = first['modified_kwargs']['items']
+        self.assertIs(first_items[0], host_item)
+        self.assertEqual(len(first_items), 2)
+        self.assertIn(style_guard.PLANNER_MARKER, first_items[1]['parts'][0]['text'])
+
+        second = await p.ground_planner_facts(items=first_items, item_schema_version=1)
+        second_items = second['modified_kwargs']['items']
+        self.assertEqual(len(second_items), 2)
+        self.assertEqual(sum(
+            str((item.get('meta') or {}).get('item_id', '')).startswith(style_guard.PLANNER_ITEM_PREFIX)
+            for item in second_items
+        ), 1)
+
+    async def test_shadow_mode_does_not_add_planner_grounding(self):
+        from test_plugin import make_config
+        p = await self.load(make_config(plugin={'shadow_mode': True}))
+        result = await p.ground_planner_facts(items=[], item_schema_version=1)
+        self.assertEqual(result, {'action': 'continue'})
 
     async def test_target_lookup_timeout_keeps_guard_bounded(self):
         p = await self.load()

@@ -25,6 +25,10 @@ from maibot_sdk.context import PluginContext, PluginPaths  # noqa: E402
 from whale_affect_under_test import plugin as plugin_module  # noqa: E402
 from whale_affect_under_test import prompt_builder  # noqa: E402
 
+models_module = __import__(f"{_bootstrap.PACKAGE_NAME}.models", fromlist=["models"])
+Reaction = models_module.Reaction
+UserRelationState = models_module.UserRelationState
+
 BOT_ACCOUNT = "100000002"
 USER_ID = "100000001"
 SESSION_ID = "session-private-1"
@@ -513,6 +517,191 @@ class SendCountingTest(PluginTestCase):
         plugin = await self.load()
         await plugin.count_successful_reply(sent=True, reply_message_id="missing")
         self.assertEqual(plugin.describe_state()["stats"]["replies_counted"], 0)
+
+
+class UpsetFrequencyTest(PluginTestCase):
+    """受伤/升级赌气时的定向降频与轮次计数。"""
+
+    async def _arm_hurt(self, plugin, now: int, text: str = "哦") -> object:
+        """把目标用户置为受伤状态，并缓存消息身份。"""
+
+        message = message_dict(message_id="m1", text=text, timestamp=now)
+        self.ctx.message.by_id["m1"] = message
+        await plugin.remember_inbound_identity(message=message)
+        target = await plugin._resolve_target(SESSION_ID, "m1")
+        user_key = target.identity_key().serialize()
+        await asyncio.to_thread(
+            plugin._storage.save_user,
+            UserRelationState(
+                user_key=user_key,
+                affinity_centi=5000,
+                reaction=Reaction.HURT.value,
+                reaction_expires_utc=now + 3600,
+                reaction_replies_left=8,
+            ),
+        )
+        return target
+
+    async def test_first_reply_is_allowed_then_followup_is_held(self) -> None:
+        """受伤后第一条回复放行，紧接着的追加回复被暂缓。"""
+
+        plugin = await self.load()
+        now = int(time.time())
+        target = await self._arm_hurt(plugin, now)
+
+        first = await plugin.skip_recent_reply_echo(
+            session_id=SESSION_ID, reply_message_id="m1", response="我需要安静一会儿。"
+        )
+        self.assertNotIn("modified_kwargs", first)
+
+        await asyncio.to_thread(plugin._record_delivery, target, SESSION_ID, "out-1", "我需要安静一会儿。", "m1")
+        held = await plugin.skip_recent_reply_echo(
+            session_id=SESSION_ID, reply_message_id="m1", response="先这样吧。"
+        )
+        self.assertEqual(held["modified_kwargs"]["response"], "")
+        self.assertEqual(plugin.describe_state()["stats"]["replies_held"], 1)
+
+    async def test_question_or_comfort_is_not_held(self) -> None:
+        """对方来问或来哄时不降频，让她能说出那句生气的话。"""
+
+        plugin = await self.load()
+        now = int(time.time())
+        target = await self._arm_hurt(plugin, now)
+        await asyncio.to_thread(plugin._record_delivery, target, SESSION_ID, "out-1", "嗯。", "m1")
+
+        care = message_dict(message_id="m2", text="你怎么了？别生气啦", timestamp=now)
+        self.ctx.message.by_id["m2"] = care
+        await plugin.remember_inbound_identity(message=care)
+
+        result = await plugin.skip_recent_reply_echo(
+            session_id=SESSION_ID, reply_message_id="m2", response="我在。"
+        )
+        self.assertNotIn("modified_kwargs", result)
+        self.assertEqual(plugin.describe_state()["stats"]["replies_held"], 0)
+
+    async def test_group_fallback_is_never_held(self) -> None:
+        """群聊没有明确引用时不静音整个群。"""
+
+        plugin = await self.load()
+        now = int(time.time())
+        group_message = message_dict(
+            message_id="g1",
+            text="晚安",
+            timestamp=now,
+            group_id="123456",
+            session_id=GROUP_SESSION_ID,
+        )
+        self.ctx.message.by_time[GROUP_SESSION_ID] = [group_message]
+        await plugin.capture_accepted_messages(session_id=GROUP_SESSION_ID)
+        target = await plugin._resolve_target(GROUP_SESSION_ID, "")
+        user_key = target.identity_key().serialize()
+        await asyncio.to_thread(
+            plugin._storage.save_user,
+            UserRelationState(
+                user_key=user_key,
+                affinity_centi=5000,
+                reaction=Reaction.SULK.value,
+                reaction_expires_utc=now + 3600,
+                reaction_replies_left=4,
+            ),
+        )
+        await asyncio.to_thread(plugin._record_delivery, target, GROUP_SESSION_ID, "out-1", "晚安。", "")
+
+        result = await plugin.skip_recent_reply_echo(
+            session_id=GROUP_SESSION_ID, reply_message_id="", response="晚安。"
+        )
+        self.assertNotIn("modified_kwargs", result)
+        self.assertEqual(plugin.describe_state()["stats"]["replies_held"], 0)
+
+    async def test_hurt_pipeline_injects_holds_then_answers_care(self) -> None:
+        """受伤的完整链路：提示块、首条放行、随后暂缓、来问时放行。"""
+
+        plugin = await self.load()
+        now = int(time.time())
+        attack = message_dict(message_id="m1", text="大肥鱼你这个废物", timestamp=now)
+        self.ctx.message.by_time[SESSION_ID] = [attack]
+        await plugin.capture_accepted_messages(session_id=SESSION_ID)
+
+        target = await plugin._resolve_target(SESSION_ID, "m1")
+        state = await asyncio.to_thread(
+            plugin._storage.load_user, target.identity_key().serialize(), plugin._engine.config
+        )
+        self.assertEqual(state.reaction, Reaction.HURT.value)
+
+        block = await plugin._build_block({"session_id": SESSION_ID, "reply_message_id": "m1"})
+        self.assertIn("刚被真实伤到", block)
+        self.assertNotIn(prompt_builder.DEFAULT_TITLE, block)
+
+        first = await plugin.skip_recent_reply_echo(
+            session_id=SESSION_ID, reply_message_id="m1", response="我不想这样说话。"
+        )
+        self.assertNotIn("modified_kwargs", first)
+
+        outbound = message_dict(
+            message_id="out-1", text="我不想这样说话。", timestamp=now, user_id=BOT_ACCOUNT
+        )
+        await plugin.count_successful_reply(sent=True, reply_message_id="m1", message=outbound)
+        state = await asyncio.to_thread(
+            plugin._storage.load_user, target.identity_key().serialize(), plugin._engine.config
+        )
+        self.assertEqual(state.reaction_replies_left, plugin._engine.config.hurt_max_replies - 1)
+
+        idle = message_dict(message_id="m2", text="哦", timestamp=now + 1)
+        self.ctx.message.by_id["m2"] = idle
+        await plugin.remember_inbound_identity(message=idle)
+        held = await plugin.skip_recent_reply_echo(
+            session_id=SESSION_ID, reply_message_id="m2", response="嗯。"
+        )
+        self.assertEqual(held["modified_kwargs"]["response"], "")
+
+        care = message_dict(message_id="m3", text="你怎么了？别不理我", timestamp=now + 2)
+        self.ctx.message.by_id["m3"] = care
+        await plugin.remember_inbound_identity(message=care)
+        allowed = await plugin.skip_recent_reply_echo(
+            session_id=SESSION_ID, reply_message_id="m3", response="我需要安静一会儿。"
+        )
+        self.assertNotIn("modified_kwargs", allowed)
+
+    async def test_sulk_block_contains_checkin_only_when_asked(self) -> None:
+        """升级赌气的提示块在对方来问时给出那句可爱的话，且不用专属称呼。"""
+
+        plugin = await self.load()
+        now = int(time.time())
+        care = message_dict(message_id="m1", text="你怎么了？", timestamp=now)
+        self.ctx.message.by_id["m1"] = care
+        await plugin.remember_inbound_identity(message=care)
+        target = await plugin._resolve_target(SESSION_ID, "m1")
+        await asyncio.to_thread(
+            plugin._storage.save_user,
+            UserRelationState(
+                user_key=target.identity_key().serialize(),
+                affinity_centi=7000,
+                preferred_title="主人",
+                title_opt_in=True,
+                title_enabled=True,
+                reaction=Reaction.SULK.value,
+                reaction_expires_utc=now + 1800,
+                reaction_replies_left=4,
+            ),
+        )
+        block = await plugin._build_block({"session_id": SESSION_ID, "reply_message_id": "m1"})
+        self.assertIn("本鱼生气了，你不哄我我就不理你了", block)
+        self.assertNotIn(prompt_builder.DEFAULT_TITLE, block)
+
+    async def test_multi_bubble_consumes_reaction_once(self) -> None:
+        """同一条入站消息的多条气泡只消耗一次情绪轮次。"""
+
+        plugin = await self.load()
+        now = int(time.time())
+        target = await self._arm_hurt(plugin, now)
+        await asyncio.to_thread(plugin._record_delivery, target, SESSION_ID, "out-1", "第一段", "m1")
+        await asyncio.to_thread(plugin._record_delivery, target, SESSION_ID, "out-2", "第二段", "m1")
+
+        state = await asyncio.to_thread(
+            plugin._storage.load_user, target.identity_key().serialize(), plugin._engine.config
+        )
+        self.assertEqual(state.reaction_replies_left, 7)
+        self.assertEqual(state.successful_reply_count, 2)
 
 
 if __name__ == "__main__":

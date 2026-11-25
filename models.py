@@ -33,11 +33,16 @@ class EventCategory(str, Enum):
 
 
 class Reaction(str, Enum):
-    """临时反应状态。"""
+    """临时反应状态。
+
+    ``SULK`` 是赌气/吃醋的升级态：话更少、回复更稀，但仍会接住问题；
+    ``HURT`` 是真实受伤，表现认真安静，不能靠昵称逗弄覆盖。
+    """
 
     NONE = "none"
     POUT = "pout"
     JEALOUS = "jealous"
+    SULK = "sulk"
     SOOTHED = "soothed"
     HURT = "hurt"
 
@@ -237,6 +242,7 @@ class Snapshot:
     active_days: int
     valid_interactions: int
     is_group: bool
+    reaction_origin: str = ""
 
 
 @dataclass
@@ -307,11 +313,22 @@ class EngineConfig:
     title_allow_in_groups: bool = False
     title_min_reply_interval: int = 5
 
-    pout_ttl_seconds: int = 180
-    soothed_ttl_seconds: int = 180
-    hurt_ttl_seconds: int = 1800
-    pout_max_replies: int = 2
+    pout_ttl_seconds: int = 28800
+    pout_max_replies: int = 10
+    jealous_ttl_seconds: int = 43200
+    jealous_max_replies: int = 10
+    sulk_ttl_seconds: int = 2700
+    sulk_max_replies: int = 4
+    sulk_max_ignored: int = 3
+    sulk_min_reply_interval_seconds: int = 600
+    sulk_repeat_threshold: int = 2
+    hurt_ttl_seconds: int = 28800
+    hurt_max_replies: int = 8
+    hurt_max_ignored: int = 1
+    hurt_min_reply_interval_seconds: int = 900
+    soothed_ttl_seconds: int = 600
     soothed_max_replies: int = 1
+    hold_upset_replies: bool = True
 
     duplicate_text_window_seconds: int = 600
     positive_semantic_cooldown_seconds: int = 600

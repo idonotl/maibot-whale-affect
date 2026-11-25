@@ -81,8 +81,10 @@ class RulesClassifierTestCase(unittest.TestCase):
             with self.subTest(text=text):
                 result = self.classifier.classify(make_message(text))
                 self.assertNotEqual(result.event, EventCategory.JEALOUSY_CANDIDATE.value)
-        group = self.classifier.classify(make_message("我今天要去找别的AI聊天",group_id="group",is_at=True))
-        self.assertNotEqual(group.event, EventCategory.JEALOUSY_CANDIDATE.value)
+        addressed = self.classifier.classify(make_message("我今天要去找别的AI聊天", group_id="group", is_at=True))
+        self.assertEqual(addressed.event, EventCategory.JEALOUSY_CANDIDATE.value)
+        unaddressed = self.classifier.classify(make_message("我今天要去找别的AI聊天", group_id="group"))
+        self.assertNotEqual(unaddressed.event, EventCategory.JEALOUSY_CANDIDATE.value)
 
     def assert_event(self, text: str, expected: str, **kwargs: object) -> None:
         """断言分类结果的事件类型。"""

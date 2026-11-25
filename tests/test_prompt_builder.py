@@ -66,11 +66,16 @@ class PromptBuilderTestCase(unittest.TestCase):
     def test_all_relationship_mood_and_reaction_combinations_fit_budget(self) -> None:
         for affinity in (1000, 2500, 4500, 6500, 9000):
             for mood in (1000, 4000, 6000, 7000, 9500):
-                for reaction in ('none', 'hurt', 'soothed', 'pout', 'jealous'):
-                    with self.subTest(affinity=affinity, mood=mood, reaction=reaction):
-                        block = pb.build_private_block(make_snapshot(
-                            affinity_centi=affinity, effective_centi=mood, reaction=reaction))
-                        self.assertLessEqual(pb.block_char_length(block), 300)
+                for reaction in ('none', 'hurt', 'sulk', 'soothed', 'pout', 'jealous'):
+                    for origin in (('', 'hurt', 'sulk', 'jealous', 'pout') if reaction == 'soothed' else ('',)):
+                        with self.subTest(affinity=affinity, mood=mood, reaction=reaction, origin=origin):
+                            block = pb.build_private_block(make_snapshot(
+                                affinity_centi=affinity,
+                                effective_centi=mood,
+                                reaction=reaction,
+                                reaction_origin=origin,
+                            ), incoming_text='你怎么了？')
+                            self.assertLessEqual(pb.block_char_length(block), 300)
 
     def test_reaction_hurt_is_reflected(self) -> None:
         """受伤状态必须写进块，且要求不许阴阳怪气。"""
@@ -78,6 +83,52 @@ class PromptBuilderTestCase(unittest.TestCase):
         block = pb.build_private_block(make_snapshot(reaction=Reaction.HURT.value))
         self.assertIn("收敛", block)
         self.assertIn("阴阳怪气", block)
+
+    def test_sulk_checkin_line_only_when_addressed_with_care(self) -> None:
+        """升级赌气只有在对方问或哄时才提示那句可爱的话。"""
+
+        asked = pb.build_private_block(
+            make_snapshot(reaction=Reaction.SULK.value),
+            incoming_text="你怎么了？",
+        )
+        self.assertIn("本鱼生气了，你不哄我我就不理你了", asked)
+
+        idle = pb.build_private_block(
+            make_snapshot(reaction=Reaction.SULK.value),
+            incoming_text="今天天气不错",
+        )
+        self.assertNotIn("本鱼生气了，你不哄我我就不理你了", idle)
+        self.assertIn("还在生气", idle)
+
+    def test_hurt_and_sulk_do_not_use_the_private_title(self) -> None:
+        """受伤和升级赌气时，即使称呼已获准也不写进提示块。"""
+
+        for reaction in (Reaction.HURT.value, Reaction.SULK.value):
+            with self.subTest(reaction=reaction):
+                block = pb.build_private_block(
+                    make_snapshot(
+                        reaction=reaction,
+                        title_allowed=True,
+                        title_should_use=True,
+                    )
+                )
+                self.assertNotIn(pb.DEFAULT_TITLE, block)
+                self.assertIn("本轮不用专属称呼", block)
+
+    def test_soothed_origin_changes_the_closing_line(self) -> None:
+        """被哄好时按来源给出不同的收尾方向。"""
+
+        hurt = pb.build_private_block(make_snapshot(
+            reaction=Reaction.SOOTHED.value, reaction_origin=Reaction.HURT.value))
+        jealous = pb.build_private_block(make_snapshot(
+            reaction=Reaction.SOOTHED.value, reaction_origin=Reaction.JEALOUS.value))
+        sulk = pb.build_private_block(make_snapshot(
+            reaction=Reaction.SOOTHED.value, reaction_origin=Reaction.SULK.value))
+
+        self.assertIn("这次先原谅", hurt)
+        self.assertIn("我才没有吃醋", jealous)
+        self.assertIn("这次原谅你了", sulk)
+        self.assertNotEqual(hurt, jealous)
 
     def test_title_only_when_allowed_and_should_use(self) -> None:
         """必须 title_allowed 与 title_should_use 同时为真才写出称呼。"""
@@ -91,6 +142,15 @@ class PromptBuilderTestCase(unittest.TestCase):
             make_snapshot(title_allowed=True, title_should_use=False)
         )
         self.assertNotIn("主人", not_used)
+
+    def test_untitled_block_allows_own_nickname_but_not_the_title(self) -> None:
+        """没到使用时机不写称呼词，但允许她自己按亲疏给对方取昵称。"""
+
+        block = pb.build_private_block(
+            make_snapshot(title_allowed=True, title_should_use=False)
+        )
+        self.assertNotIn("主人", block)
+        self.assertIn("自己按亲疏取的昵称", block)
 
     def test_title_is_sanitized_against_injection(self) -> None:
         """非白名单称呼一律回落，不能污染提示块结构。"""

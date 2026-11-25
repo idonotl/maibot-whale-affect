@@ -46,18 +46,67 @@ class TargetIsolationTest(PluginTestCase):
         self.assertIn("本轮可以用", second)
         self.assertEqual(current.last_title_reply_count, 0)
 
+    async def test_non_owner_high_affinity_never_gets_unique_title(self):
+        plugin = await self.load()
+        message = message_dict(message_id="other-title", user_id="B", text="你好", timestamp=int(time.time()))
+        self.ctx.message.by_id["other-title"] = message
+        target = host_adapter.normalize_inbound(message)
+        user = plugin._storage.load_user(target.identity_key().serialize(), plugin._engine.config)
+        plugin._storage.save_user(replace(
+            user, affinity_centi=9000, active_days=14, valid_interactions=40,
+            preferred_title="主人", title_opt_in=True, successful_reply_count=10,
+        ))
+        block = await plugin._build_block({"session_id": SESSION_ID, "reply_message_id": "other-title"})
+        self.assertNotIn("本轮可以用", block)
+        self.assertNotIn("「主人」", block)
+        self.assertIn("自己按亲疏取的昵称", block)
+
     async def test_natural_comfort_clears_pout_instead_of_plain_chat(self):
         plugin = await self.load()
         message = host_adapter.normalize_inbound(message_dict(message_id="comfort", text="好啦，小鲸最可爱了，摸摸，不逗你啦", timestamp=int(time.time())))
         self.assertEqual(plugin._rules.classify(message).event, "comfort")
 
     async def test_group_without_target_only_gets_global_mood(self):
+        """群里多人抢话时不猜对象，只用全局心情。"""
+
         plugin = await self.load()
-        self.ctx.message.by_time[GROUP_SESSION_ID] = [message_dict(message_id="a", text="小鲸你好", timestamp=int(time.time()), group_id="g", session_id=GROUP_SESSION_ID)]
+        now = int(time.time())
+        self.ctx.message.by_time[GROUP_SESSION_ID] = [
+            message_dict(message_id="a", text="小鲸你好", timestamp=now, group_id="g", session_id=GROUP_SESSION_ID),
+            message_dict(message_id="b", user_id="B", text="我也说一句", timestamp=now, group_id="g", session_id=GROUP_SESSION_ID),
+        ]
         await plugin.capture_accepted_messages(session_id=GROUP_SESSION_ID)
         block = await plugin._build_block({"session_id": GROUP_SESSION_ID, "reply_message_id": ""})
         self.assertIn("群体发言", block)
         self.assertNotIn("关系：", block)
+
+    async def test_group_single_speaker_gets_own_relationship(self):
+        """窗口里只有一个人跟她说话时，按那个人的关系档位回。"""
+
+        plugin = await self.load()
+        self.ctx.message.by_time[GROUP_SESSION_ID] = [
+            message_dict(message_id="a", text="小鲸你好", timestamp=int(time.time()), group_id="g", session_id=GROUP_SESSION_ID),
+        ]
+        await plugin.capture_accepted_messages(session_id=GROUP_SESSION_ID)
+        block = await plugin._build_block({"session_id": GROUP_SESSION_ID, "reply_message_id": ""})
+        self.assertIn("关系：", block)
+        self.assertNotIn("群体发言", block)
+
+    async def test_group_reply_keeps_jealous_reaction(self):
+        """群聊回复不再抹掉吃醋反应。"""
+
+        plugin = await self.load()
+        message = message_dict(message_id="j", text="小鲸你好", timestamp=int(time.time()), group_id="g", session_id=GROUP_SESSION_ID)
+        self.ctx.message.by_id["j"] = message
+        target = host_adapter.normalize_inbound(message)
+        user = plugin._storage.load_user(target.identity_key().serialize(), plugin._engine.config)
+        plugin._storage.save_user(replace(
+            user, reaction="jealous",
+            reaction_expires_utc=plugin._engine.clock.now_utc() + 180,
+        ))
+        block = await plugin._build_block({"session_id": GROUP_SESSION_ID, "reply_message_id": "j"})
+        self.assertIn("当前反应：", block)
+        self.assertIn("介意", block)
 
     async def test_capability_cannot_return_message_from_different_session(self):
         plugin = await self.load()

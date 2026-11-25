@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
@@ -204,6 +205,20 @@ class ReactionDecision:
     replies_left: int = 0
     explicit: bool = False
     keep_expires_utc: int = 0
+    origin: str = ""
+
+
+# 进入赌气后，再被同一人逗到多久才升级为升级赌气。
+_POUT_ESCALATE_AFTER_SECONDS = 60
+
+# 反应元数据复用 cooldowns 表，不新增数据库列。
+_ORIGIN_BUCKET = "reaction_origin"
+_UPSET_BUCKET = "upset"
+_EPISODE_BUCKET = "reaction_episode"
+_TURN_BUCKET = "reaction_turn"
+
+# 同一条入站消息拆成多条气泡时，这段时间内只消耗一次反应轮次。
+_TURN_GUARD_SECONDS = 120
 
 
 class AffectEngine:
@@ -255,6 +270,9 @@ class AffectEngine:
         effective = clamp(mood.mood_centi + user.offset_centi, 0, 10000)
         is_group = scene == "group"
         title_allowed, should_use = self.compute_title_state(user, effective, is_group)
+        origin = ""
+        if user.reaction == Reaction.SOOTHED.value:
+            origin = self._read_origin(user_key)
         return Snapshot(
             user_key=user_key,
             mood_centi=mood.mood_centi,
@@ -269,6 +287,7 @@ class AffectEngine:
             active_days=user.active_days,
             valid_interactions=user.valid_interactions,
             is_group=is_group,
+            reaction_origin=origin,
         )
 
     def project_global(self, bot_key: str, now_utc: int) -> MoodState:
@@ -319,14 +338,34 @@ class AffectEngine:
         if is_group and not cfg.title_allow_in_groups:
             return False, False
 
-        # 许可状态与「本次是否说出来」分开：低心情或刚受伤时不使用。
-        runtime_blocked = effective_centi < 4000 or user.reaction == Reaction.HURT.value
+        # 许可状态与「本次是否说出来」分开：低心情、受伤或升级赌气时不使用。
+        runtime_blocked = effective_centi < 4000 or user.reaction in (
+            Reaction.HURT.value,
+            Reaction.SULK.value,
+        )
         if not enabled or runtime_blocked:
             return enabled and not runtime_blocked, False
 
         gap = user.successful_reply_count - user.last_title_reply_count
-        should_use = gap >= max(1, cfg.title_min_reply_interval)
+        should_use = gap >= self._title_interval(cfg, effective_centi, user.affinity_centi)
         return True, should_use
+
+    @staticmethod
+    def _title_interval(cfg: EngineConfig, effective_centi: int, affinity_centi: int) -> int:
+        """心情越好、关系越近，称呼的间隔越短（越容易主动叫出口）。
+
+        Args:
+            cfg: 引擎参数。
+            effective_centi: 有效心情 E（万分之一单位）。
+            affinity_centi: 长期好感 F（万分之一单位）。
+
+        Returns:
+            int: 两次使用称呼之间最少间隔的成功回复数。
+        """
+
+        mood_rank = {"happy": 1, "delighted": 2}.get(mood_level(effective_centi), 0)
+        affinity_rank = {"familiar": 1, "close": 1, "intimate": 2}.get(affinity_level(affinity_centi), 0)
+        return max(1, max(1, cfg.title_min_reply_interval) - mood_rank - affinity_rank)
 
     def mark_title_used(self, user_key: str, bot_key: str, now_utc: int) -> None:
         """记录一次称呼使用，让计数间隔重新开始。
@@ -343,24 +382,42 @@ class AffectEngine:
         updated = replace(user, last_title_reply_count=user.successful_reply_count, version=user.version + 1)
         self._storage.save_user(updated)
 
-    def record_successful_reply(self, user_key: str, bot_key: str, now_utc: int) -> None:
-        """统计一次成功发出的普通回复，并消耗 reaction 的剩余次数。
+    def record_successful_reply(
+        self,
+        user_key: str,
+        bot_key: str,
+        now_utc: int,
+        *,
+        consume_reaction: bool = True,
+    ) -> None:
+        """统计一次成功发出的普通回复，并按「轮次」消耗 reaction 次数。
+
+        同一条回复被拆成多条气泡时，调用方传入 ``consume_reaction=False``，
+        只增加称呼计数，不重复消耗反应轮次。
 
         Args:
             user_key: 用户身份键。
             bot_key: 机器人身份键。
             now_utc: 当前 UTC 时间戳。
+            consume_reaction: 是否消耗一次反应回复轮次。
         """
 
         del bot_key
         local_date = self._clock.local_date(now_utc)
         user = self._project_user(user_key, local_date, now_utc)
-        replies_left = max(0, user.reaction_replies_left - 1)
         reaction = user.reaction
         expires = user.reaction_expires_utc
-        if reaction != Reaction.NONE.value and replies_left <= 0:
-            reaction = Reaction.NONE.value
-            expires = 0
+        replies_left = user.reaction_replies_left
+
+        if consume_reaction and reaction != Reaction.NONE.value:
+            replies_left = max(0, replies_left - 1)
+            if reaction in (Reaction.SULK.value, Reaction.HURT.value):
+                self._touch_upset(user, now_utc)
+            if replies_left <= 0:
+                reaction = Reaction.NONE.value
+                expires = 0
+                self._clear_reaction_metadata(user_key, now_utc)
+
         updated = replace(
             user,
             successful_reply_count=user.successful_reply_count + 1,
@@ -370,6 +427,93 @@ class AffectEngine:
             version=user.version + 1,
         )
         self._storage.save_user(updated)
+
+    def record_turn_delivery(
+        self,
+        user_key: str,
+        bot_key: str,
+        session_id: str,
+        turn_token: str,
+        now_utc: int,
+    ) -> None:
+        """统计一次成功发送，但同一轮多气泡只消耗一次反应轮次。
+
+        Args:
+            user_key: 用户身份键。
+            bot_key: 机器人身份键。
+            session_id: 会话 ID。
+            turn_token: 本轮标识（入站消息 ID 或时间窗）。
+            now_utc: 当前 UTC 时间戳。
+        """
+
+        meta = self._read_json_bucket(user_key, _TURN_BUCKET)
+        same_turn = False
+        if meta.get("session") == session_id and meta.get("turn") == turn_token:
+            try:
+                last_at = int(meta.get("at", 0) or 0)
+            except (TypeError, ValueError):
+                last_at = 0
+            same_turn = 0 <= now_utc - last_at <= _TURN_GUARD_SECONDS
+        self.record_successful_reply(
+            user_key,
+            bot_key,
+            now_utc,
+            consume_reaction=not same_turn,
+        )
+        if not same_turn:
+            self._write_json_bucket(
+                user_key,
+                _TURN_BUCKET,
+                now_utc,
+                {"session": session_id, "turn": turn_token, "at": now_utc},
+            )
+
+    def should_hold_upset_reply(self, user_key: str, now_utc: int) -> bool:
+        """判断受伤/升级赌气时是否应暂缓这一轮回复。
+
+        进入情绪后的第一条回复始终放行，让她先说明哪里不舒服；之后按配置的
+        最小间隔限制频率。被略过的次数达到上限后放行，避免长时间冷场。
+
+        Args:
+            user_key: 用户身份键。
+            now_utc: 当前 UTC 时间戳。
+
+        Returns:
+            bool: 需要暂缓本轮回复时返回 ``True``。
+        """
+
+        cfg = self.config
+        user = self._project_user(user_key, self._clock.local_date(now_utc), now_utc)
+        if user.reaction not in (Reaction.SULK.value, Reaction.HURT.value):
+            return False
+        if user.reaction == Reaction.SULK.value:
+            interval = cfg.sulk_min_reply_interval_seconds
+            max_ignored = cfg.sulk_max_ignored
+        else:
+            interval = cfg.hurt_min_reply_interval_seconds
+            max_ignored = cfg.hurt_max_ignored
+
+        started = self._reaction_started(user)
+        meta = self._read_json_bucket(user_key, _UPSET_BUCKET)
+        if meta.get("state") != user.reaction or int(meta.get("started", 0) or 0) != started:
+            meta = {
+                "state": user.reaction,
+                "started": started,
+                "last_reply": 0,
+                "ignored": 0,
+                "seen": 0,
+            }
+        try:
+            last_reply = int(meta.get("last_reply", 0) or 0)
+            ignored = int(meta.get("ignored", 0) or 0)
+            seen = int(meta.get("seen", 0) or 0)
+        except (TypeError, ValueError):
+            last_reply, ignored, seen = 0, 0, 0
+        if last_reply <= 0 or now_utc - last_reply >= interval or ignored >= max_ignored:
+            return False
+        meta.update({"last_reply": last_reply, "ignored": ignored + 1, "seen": seen + 1})
+        self._write_json_bucket(user_key, _UPSET_BUCKET, now_utc, meta)
+        return True
 
     def set_preferred_title(
         self,
@@ -451,7 +595,7 @@ class AffectEngine:
         reaction = stored.reaction
         expires = stored.reaction_expires_utc
         replies_left = stored.reaction_replies_left
-        if reaction != Reaction.NONE.value and now_utc >= expires:
+        if reaction != Reaction.NONE.value and (not expires or now_utc >= expires):
             reaction = Reaction.NONE.value
             expires = 0
             replies_left = 0
@@ -564,11 +708,17 @@ class AffectEngine:
         }
 
         if category == EventCategory.JEALOUSY_CANDIDATE.value:
-            # Respect a prior real hurt state and keep this private and infrequent.
+            # Keep this infrequent; groups count too. A real hurt, active sulk or
+            # just-accepted comfort takes priority over a new jealous moment.
             cooldown = self._storage.get_cooldown(event.user_key, "jealousy")
             chance = 0.0 if user.affinity_centi < 4000 else (0.25 if user.affinity_centi < 6000 else (0.40 if user.affinity_centi < 8000 else 0.55))
             draw = int.from_bytes(hashlib.sha256(event.event_key.encode("utf-8")).digest()[:8], "big") / 2**64
-            selected = (not event.is_group and user.reaction != Reaction.HURT.value and chance > 0
+            selected = (user.reaction not in (
+                            Reaction.HURT.value,
+                            Reaction.SULK.value,
+                            Reaction.SOOTHED.value,
+                        )
+                        and chance > 0
                         and (cooldown is None or now_utc - cooldown[0] >= 1800) and draw < chance)
             if not selected:
                 category = EventCategory.FRIENDLY_CHAT.value
@@ -616,7 +766,24 @@ class AffectEngine:
                 allow_semantic = False
 
         # 3) 确定 reaction（与是否仍有计分预算无关）
-        decision = self._decide_reaction(category, user, now_utc, pout=pout_selected)
+        repeat_trigger = (
+            (category == EventCategory.JEALOUSY_CANDIDATE.value
+             and user.reaction in (Reaction.JEALOUS.value, Reaction.POUT.value))
+            or (category == EventCategory.AFFECTIONATE_TEASE.value
+                and user.reaction == Reaction.POUT.value
+                and self._pout_old_enough(user, now_utc))
+        )
+        repeat_triggers = (
+            self._next_repeat_triggers(user, now_utc) if repeat_trigger else 0
+        )
+        decision = self._decide_reaction(
+            category,
+            user,
+            now_utc,
+            pout=pout_selected,
+            repeat_triggers=repeat_triggers,
+            repeat_trigger=repeat_trigger,
+        )
 
         # 4) 语义增量
         delta_m, delta_d, delta_f = SCORE_TABLE[category] if allow_semantic else (0, 0, 0)
@@ -809,6 +976,15 @@ class AffectEngine:
         self._storage.save_mood(updated_mood)
         self._storage.save_user(updated_user)
         self._storage.save_daily(updated_daily)
+        self._sync_reaction_metadata(
+            event.user_key,
+            user,
+            decision,
+            reaction_state,
+            now_utc,
+            repeat_trigger=repeat_trigger,
+            repeat_triggers=repeat_triggers,
+        )
 
         if apology_blocked:
             suppressed.append("apology_repair_not_applied")
@@ -828,6 +1004,7 @@ class AffectEngine:
             "negative_f": total_negative_f,
             "valid_chat": granted_valid,
             "active_bonus": granted_active,
+            "reaction_triggers": repeat_triggers,
             "suppressed": suppressed,
         }
         self._storage.write_event(
@@ -856,6 +1033,7 @@ class AffectEngine:
             active_days=new_active_days,
             valid_interactions=new_valid_interactions,
             is_group=event.is_group,
+            reaction_origin=self._read_origin(event.user_key) if reaction_state == Reaction.SOOTHED.value else "",
         )
         return ApplyResult(
             status=EventStatus.APPLIED.value,
@@ -876,10 +1054,10 @@ class AffectEngine:
         return "group" if event.is_group else "private"
 
     def _pout_selected(self, event: AffectEvent, user: UserRelationState, now_utc: int) -> bool:
-        """昵称调侃是否升级成短暂赌气。
+        """昵称调侃是否新起一段赌气。
 
-        赌气只在私聊、关系够近、且距上次赌气足够久时偶尔发生，其余调侃交给
-        回复模型按语境轻松接梗，避免她把爱称记成真实矛盾。
+        赌气只在私聊、关系够近、且距上次新起赌气足够久时偶尔发生；已经处于
+        赌气/吃醋/受伤等状态时不再新起，升级逻辑由 ``_decide_reaction`` 处理。
 
         Args:
             event: 当前事件。
@@ -887,10 +1065,18 @@ class AffectEngine:
             now_utc: 当前 UTC 时间戳。
 
         Returns:
-            bool: 是否进入 pout。
+            bool: 是否新进入 pout。
         """
 
-        if event.is_group or user.reaction == Reaction.HURT.value:
+        if event.is_group:
+            return False
+        if user.reaction in (
+            Reaction.POUT.value,
+            Reaction.JEALOUS.value,
+            Reaction.SULK.value,
+            Reaction.SOOTHED.value,
+            Reaction.HURT.value,
+        ):
             return False
         affinity = user.affinity_centi
         if affinity < 6000:
@@ -909,42 +1095,100 @@ class AffectEngine:
         now_utc: int,
         *,
         pout: bool = False,
+        repeat_triggers: int = 0,
+        repeat_trigger: bool = False,
     ) -> ReactionDecision:
-        """根据事件类别决定临时反应。
+        """根据事件类别与当前状态决定临时反应。
+
+        优先级：攻击 > 受伤/升级赌气/吃醋/赌气 > 安抚 > 普通聊天。
+        已经处于受伤或升级赌气时，昵称逗弄不能覆盖；吃醋和赌气会被第二次
+        同类触发升级为升级赌气，而不是无限叠时间。
 
         Args:
             category: 事件类别。
-            user: 当前用户状态。
+            user: 当前用户状态（已投影）。
             now_utc: 当前 UTC 时间戳。
-            pout: 本次昵称调侃是否被选中为短暂赌气。
+            pout: 本次昵称调侃是否被选中为新起赌气。
+            repeat_triggers: 若本次是重复触发，累计触发次数（含本次）。
+            repeat_trigger: 本次是否构成重复触发。
 
         Returns:
-            ReactionDecision: reactor 决策。
+            ReactionDecision: reaction 决策。
         """
 
         cfg = self._config
         current = user.reaction
-        if current != Reaction.NONE.value and user.reaction_expires_utc and now_utc >= user.reaction_expires_utc:
+        expires = user.reaction_expires_utc
+        replies_left = user.reaction_replies_left
+        if current != Reaction.NONE.value and (not expires or now_utc >= expires):
             current = Reaction.NONE.value
+            expires = 0
+            replies_left = 0
+
+        keep = ReactionDecision(
+            current,
+            0,
+            replies_left,
+            False,
+            keep_expires_utc=expires,
+        )
 
         if category in (EventCategory.MILD_ATTACK.value, EventCategory.SEVERE_ATTACK.value):
-            return ReactionDecision(Reaction.HURT.value, cfg.hurt_ttl_seconds, 0, True)
-        if category == EventCategory.JEALOUSY_CANDIDATE.value:
-            return ReactionDecision(Reaction.JEALOUS.value, 180, 1, True)
-        if category == EventCategory.AFFECTIONATE_TEASE.value:
             if current == Reaction.HURT.value:
-                # 不能靠再喊昵称覆盖真实受伤
-                return ReactionDecision(
-                    current,
-                    0,
-                    user.reaction_replies_left,
-                    False,
-                    keep_expires_utc=user.reaction_expires_utc,
-                )
-            # Persona nicknames are normal playful address, not a persistent mood.
-            # Most teasing is left to the reply model so she can joke back without
-            # demanding comfort; a close user's teasing occasionally turns into a
-            # short-lived pout that clears on its own.
+                # 连续攻击不刷新受伤时长与回复额度，避免无限期挂着。
+                return keep
+            return ReactionDecision(
+                Reaction.HURT.value,
+                cfg.hurt_ttl_seconds,
+                cfg.hurt_max_replies,
+                True,
+            )
+
+        if category == EventCategory.JEALOUSY_CANDIDATE.value:
+            if current in (Reaction.HURT.value, Reaction.SULK.value, Reaction.SOOTHED.value):
+                return keep
+            if current == Reaction.POUT.value:
+                # 赌气中又被吃醋戳到；达到重复阈值才升级，默认第二次就升级。
+                if repeat_triggers >= cfg.sulk_repeat_threshold:
+                    return ReactionDecision(
+                        Reaction.SULK.value,
+                        cfg.sulk_ttl_seconds,
+                        cfg.sulk_max_replies,
+                        True,
+                    )
+                return keep
+            if current == Reaction.JEALOUS.value:
+                if repeat_triggers >= cfg.sulk_repeat_threshold:
+                    return ReactionDecision(
+                        Reaction.SULK.value,
+                        cfg.sulk_ttl_seconds,
+                        cfg.sulk_max_replies,
+                        True,
+                    )
+                return keep
+            return ReactionDecision(
+                Reaction.JEALOUS.value,
+                cfg.jealous_ttl_seconds,
+                cfg.jealous_max_replies,
+                True,
+            )
+
+        if category == EventCategory.AFFECTIONATE_TEASE.value:
+            if current in (Reaction.HURT.value, Reaction.SULK.value, Reaction.SOOTHED.value):
+                # 真实受伤与升级赌气不被昵称逗弄覆盖；刚被哄好也先保持缓和。
+                return keep
+            if current == Reaction.POUT.value:
+                if repeat_trigger and repeat_triggers >= cfg.sulk_repeat_threshold:
+                    return ReactionDecision(
+                        Reaction.SULK.value,
+                        cfg.sulk_ttl_seconds,
+                        cfg.sulk_max_replies,
+                        True,
+                    )
+                return keep
+            if current == Reaction.JEALOUS.value:
+                # 吃醋比玩笑重，昵称逗弄不把它降级成赌气。
+                return keep
             if pout:
                 return ReactionDecision(
                     Reaction.POUT.value,
@@ -952,19 +1196,210 @@ class AffectEngine:
                     cfg.pout_max_replies,
                     True,
                 )
-            return ReactionDecision(Reaction.NONE.value, 0, 0, False)
+            return keep
+
         if category in (EventCategory.COMFORT.value, EventCategory.APOLOGY.value):
-            # Kindness can raise mood without establishing an earlier injury.
-            # Only describe recovery when an actual negative state existed.
-            if current in (Reaction.HURT.value, Reaction.JEALOUS.value, Reaction.POUT.value) or user.offset_centi < 0:
-                return ReactionDecision(Reaction.SOOTHED.value, cfg.soothed_ttl_seconds, cfg.soothed_max_replies, True)
-        return ReactionDecision(
-            current,
-            0,
-            user.reaction_replies_left,
-            False,
-            keep_expires_utc=user.reaction_expires_utc,
+            if current in (
+                Reaction.HURT.value,
+                Reaction.SULK.value,
+                Reaction.JEALOUS.value,
+                Reaction.POUT.value,
+            ):
+                return ReactionDecision(
+                    Reaction.SOOTHED.value,
+                    cfg.soothed_ttl_seconds,
+                    cfg.soothed_max_replies,
+                    True,
+                    origin=current,
+                )
+            return keep
+
+        return keep
+
+    def _reaction_ttl(self, reaction: str) -> int:
+        """返回某反应当前配置的存活秒数。"""
+
+        cfg = self._config
+        return {
+            Reaction.POUT.value: cfg.pout_ttl_seconds,
+            Reaction.JEALOUS.value: cfg.jealous_ttl_seconds,
+            Reaction.SULK.value: cfg.sulk_ttl_seconds,
+            Reaction.HURT.value: cfg.hurt_ttl_seconds,
+            Reaction.SOOTHED.value: cfg.soothed_ttl_seconds,
+        }.get(reaction, 0)
+
+    def _reaction_started(self, user: UserRelationState) -> int:
+        """反推当前反应的开始时刻（用于识别同一段情绪）。"""
+
+        ttl = self._reaction_ttl(user.reaction)
+        if ttl <= 0 or user.reaction_expires_utc <= 0:
+            return 0
+        return int(user.reaction_expires_utc) - ttl
+
+    def _pout_old_enough(self, user: UserRelationState, now_utc: int) -> bool:
+        """赌气持续至少一小段时间后，再次逗弄才升级。"""
+
+        if user.reaction != Reaction.POUT.value:
+            return False
+        started = self._reaction_started(user)
+        return started > 0 and now_utc - started >= _POUT_ESCALATE_AFTER_SECONDS
+
+    def _read_json_bucket(self, user_key: str, bucket: str) -> Dict[str, Any]:
+        """读取以 JSON 存在 cooldowns.text_hash 里的轻量元数据。"""
+
+        stored = self._storage.get_cooldown(user_key, bucket)
+        if stored is None or not stored[1]:
+            return {}
+        try:
+            parsed = json.loads(stored[1])
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _write_json_bucket(self, user_key: str, bucket: str, now_utc: int, payload: Dict[str, Any]) -> None:
+        """写入轻量元数据；空字典表示清除。"""
+
+        self._storage.set_cooldown(
+            user_key,
+            bucket,
+            now_utc,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) if payload else "{}",
         )
+
+    def _read_origin(self, user_key: str) -> str:
+        """读取被哄好之前的负面状态；只接受受控枚举。"""
+
+        stored = self._storage.get_cooldown(user_key, _ORIGIN_BUCKET)
+        if stored is None:
+            return ""
+        value = str(stored[1])
+        allowed = {
+            Reaction.POUT.value,
+            Reaction.JEALOUS.value,
+            Reaction.SULK.value,
+            Reaction.HURT.value,
+        }
+        return value if value in allowed else ""
+
+    def _next_repeat_triggers(self, user: UserRelationState, now_utc: int) -> int:
+        """计算当前情绪段内的累计触发次数（含本次）。"""
+
+        del now_utc
+        triggers = 1
+        meta = self._read_json_bucket(user.user_key, _EPISODE_BUCKET)
+        started = self._reaction_started(user)
+        if (
+            meta.get("state") == user.reaction
+            and int(meta.get("started", 0) or 0) == started
+        ):
+            try:
+                triggers = max(1, int(meta.get("triggers", 1)))
+            except (TypeError, ValueError):
+                triggers = 1
+        return triggers + 1
+
+    def _touch_upset(self, user: UserRelationState, now_utc: int) -> None:
+        """记录受伤/升级赌气中的一次真实回复。"""
+
+        started = self._reaction_started(user)
+        meta = self._read_json_bucket(user.user_key, _UPSET_BUCKET)
+        if meta.get("state") != user.reaction or int(meta.get("started", 0) or 0) != started:
+            meta = {
+                "state": user.reaction,
+                "started": started,
+                "ignored": 0,
+                "seen": 0,
+            }
+        meta["last_reply"] = int(now_utc)
+        meta["ignored"] = 0
+        self._write_json_bucket(user.user_key, _UPSET_BUCKET, now_utc, meta)
+
+    def _clear_reaction_metadata(self, user_key: str, now_utc: int) -> None:
+        """反应结束时清掉来源与略过计数。"""
+
+        self._storage.set_cooldown(user_key, _ORIGIN_BUCKET, now_utc, "")
+        self._write_json_bucket(user_key, _UPSET_BUCKET, now_utc, {})
+        self._write_json_bucket(user_key, _EPISODE_BUCKET, now_utc, {})
+        self._write_json_bucket(user_key, _TURN_BUCKET, now_utc, {})
+
+    def _sync_reaction_metadata(
+        self,
+        user_key: str,
+        previous: UserRelationState,
+        decision: ReactionDecision,
+        reaction: str,
+        now_utc: int,
+        *,
+        repeat_trigger: bool,
+        repeat_triggers: int,
+    ) -> None:
+        """把反应切换同步到 cooldowns 里的轻量元数据。"""
+
+        if decision.explicit:
+            self._write_json_bucket(user_key, _TURN_BUCKET, now_utc, {})
+            if reaction == Reaction.SOOTHED.value:
+                self._storage.set_cooldown(
+                    user_key,
+                    _ORIGIN_BUCKET,
+                    now_utc,
+                    decision.origin,
+                )
+                self._write_json_bucket(user_key, _UPSET_BUCKET, now_utc, {})
+                self._write_json_bucket(user_key, _EPISODE_BUCKET, now_utc, {})
+                return
+            if reaction in (Reaction.SULK.value, Reaction.HURT.value):
+                self._write_json_bucket(
+                    user_key,
+                    _UPSET_BUCKET,
+                    now_utc,
+                    {
+                        "state": reaction,
+                        "started": now_utc,
+                        "last_reply": 0,
+                        "ignored": 0,
+                        "seen": 0,
+                    },
+                )
+                self._storage.set_cooldown(user_key, _ORIGIN_BUCKET, now_utc, "")
+                self._write_json_bucket(user_key, _EPISODE_BUCKET, now_utc, {})
+                return
+            if reaction in (Reaction.POUT.value, Reaction.JEALOUS.value):
+                self._write_json_bucket(
+                    user_key,
+                    _EPISODE_BUCKET,
+                    now_utc,
+                    {
+                        "state": reaction,
+                        "started": now_utc,
+                        "triggers": 1,
+                    },
+                )
+                self._write_json_bucket(user_key, _UPSET_BUCKET, now_utc, {})
+                self._storage.set_cooldown(user_key, _ORIGIN_BUCKET, now_utc, "")
+                return
+            self._clear_reaction_metadata(user_key, now_utc)
+            return
+
+        if (
+            repeat_trigger
+            and reaction == previous.reaction
+            and reaction in (Reaction.POUT.value, Reaction.JEALOUS.value)
+        ):
+            started = self._reaction_started(previous) or now_utc
+            self._write_json_bucket(
+                user_key,
+                _EPISODE_BUCKET,
+                now_utc,
+                {
+                    "state": reaction,
+                    "started": started,
+                    "triggers": max(1, repeat_triggers),
+                },
+            )
+            return
+
+        if reaction == Reaction.NONE.value and previous.reaction != Reaction.NONE.value:
+            self._clear_reaction_metadata(user_key, now_utc)
 
     @staticmethod
     def _apply_reaction(
@@ -1080,10 +1515,21 @@ def build_engine_config(
         title_allow_in_groups=bool(affinity.title_allow_in_groups),
         title_min_reply_interval=int(affinity.title_min_reply_interval),
         pout_ttl_seconds=int(reactions.pout_ttl_seconds),
-        soothed_ttl_seconds=int(reactions.soothed_ttl_seconds),
-        hurt_ttl_seconds=int(reactions.hurt_ttl_seconds),
         pout_max_replies=int(reactions.pout_max_replies),
+        jealous_ttl_seconds=int(reactions.jealous_ttl_seconds),
+        jealous_max_replies=int(reactions.jealous_max_replies),
+        sulk_ttl_seconds=int(reactions.sulk_ttl_seconds),
+        sulk_max_replies=int(reactions.sulk_max_replies),
+        sulk_max_ignored=int(reactions.sulk_max_ignored),
+        sulk_min_reply_interval_seconds=int(reactions.sulk_min_reply_interval_seconds),
+        sulk_repeat_threshold=int(reactions.sulk_repeat_threshold),
+        hurt_ttl_seconds=int(reactions.hurt_ttl_seconds),
+        hurt_max_replies=int(reactions.hurt_max_replies),
+        hurt_max_ignored=int(reactions.hurt_max_ignored),
+        hurt_min_reply_interval_seconds=int(reactions.hurt_min_reply_interval_seconds),
+        soothed_ttl_seconds=int(reactions.soothed_ttl_seconds),
         soothed_max_replies=int(reactions.soothed_max_replies),
+        hold_upset_replies=bool(reactions.hold_upset_replies),
         duplicate_text_window_seconds=int(scoring.duplicate_text_window_seconds),
         positive_semantic_cooldown_seconds=int(scoring.positive_semantic_cooldown_seconds),
         positive_semantic_daily_count_cap=int(scoring.positive_semantic_daily_count_cap),
@@ -1115,6 +1561,7 @@ def describe_snapshot(snapshot: Snapshot) -> Dict[str, Any]:
         "affinity_level": affinity_level(snapshot.affinity_centi),
         "reaction": snapshot.reaction,
         "reaction_expires_utc": snapshot.reaction_expires_utc,
+        "reaction_origin": snapshot.reaction_origin,
         "title_allowed": snapshot.title_allowed,
         "title_should_use": snapshot.title_should_use,
         "active_days": snapshot.active_days,
